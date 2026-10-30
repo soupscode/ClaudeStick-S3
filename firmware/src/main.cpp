@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.6.1";
+static const char*    FW_VERSION   = "0.7.0";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -62,13 +62,31 @@ static const int      MAX_CHOICES  = MAX_MACROS + 4;   // Claude's own options +
 
 struct Macro { String label; String text; };
 
+static const int      MAX_TODO = 12;
+
+struct TodoItem { char st = 'p'; String text; };   // st: p pending, i in progress, c completed
+
 struct Session {
   bool     used = false;
   String   id, project, state, detail;
   uint32_t lastSeen = 0, stateSince = 0;
   bool     stopFlag = false;   // "Stop now" queued from the device
   String   inject;             // macro queued mid-run
+  // Claude's to-do list (from the hook)
+  TodoItem todo[MAX_TODO];
+  uint8_t  nTodo = 0, todoSkip = 0, todoDone = 0, todoTotal = 0;
+  String   todoNow;
+  // token usage for this session (from the transcript)
+  uint32_t tokIn = 0, tokOut = 0, tokCR = 0, tokCW = 0, ctx = 0;
+  String   model;
+  bool     hasUsage = false;
 };
+
+// Tokens per session per day, kept after a session ends so "today" stays right.
+struct DayTok { String sid, day; uint32_t tok = 0; };
+static const int MAX_LEDGER = 24;
+static DayTok   ledger[MAX_LEDGER];
+static String   curDay;          // local date from the newest hook report
 
 enum Src : uint8_t { SRC_WIFI = 0, SRC_BLE = 1 };
 enum Decision : int8_t { D_PENDING = -1, D_DENY = 0, D_ALLOW = 1, D_SKIP = 2, D_ALWAYS = 3 };
@@ -80,7 +98,8 @@ struct Approval {
   String   bleId;              // desktop prompt id
   String   tool, detail, project;
   String   always;             // what "always allow" would remember ("" = not offered)
-  String   risk, riskWhy;      // risk == "high" needs a hold to allow
+  String   risk, riskWhy;      // risk == "high" needs a double-press to allow
+  String   session, reason;    // reason: what you said when denying by voice
   uint32_t created = 0, lastPoll = 0;
   int8_t   decision = D_PENDING;
 };
@@ -142,7 +161,7 @@ struct Settings {
 static uint32_t lastStickAt = 0, lastKbdAt = 0;   // auto remote mode inputs
 static int32_t     tzOffset = 0;
 
-enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST };
+enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST, SCR_DETAIL };
 static Screen   screen = SCR_HOME;
 static int      menuIdx = 0, focusSession = -1;
 static uint32_t lastActivity = 0, lastBeep = 0, lastDraw = 0;
@@ -485,10 +504,59 @@ static void noteSession(JsonDocument& in, Session*& s) {
 
 // POST /event  {session, project, event, tool?, detail?, can_stop?, can_inject?, macros?}
 // -> {"stop":bool, "inject":string|null}
+static void noteLedger(const String& sid, const String& day, uint32_t tok) {
+  if (!day.length()) return;
+  if (day > curDay) curDay = day;
+  int slot = -1;
+  for (int i = 0; i < MAX_LEDGER; i++) if (ledger[i].sid == sid && ledger[i].day == day) slot = i;
+  if (slot < 0)   // reuse a free slot, else one from an older day, else the smallest
+    for (int i = 0; i < MAX_LEDGER; i++) if (!ledger[i].sid.length()) { slot = i; break; }
+  if (slot < 0)
+    for (int i = 0; i < MAX_LEDGER; i++) if (ledger[i].day != curDay) { slot = i; break; }
+  if (slot < 0) {
+    slot = 0;
+    for (int i = 1; i < MAX_LEDGER; i++) if (ledger[i].tok < ledger[slot].tok) slot = i;
+  }
+  ledger[slot].sid = sid; ledger[slot].day = day; ledger[slot].tok = tok;
+}
+
+static uint32_t tokensToday() {
+  uint32_t t = 0;
+  for (auto& l : ledger) if (l.sid.length() && l.day == curDay) t += l.tok;
+  return t;
+}
+
+// Optional to-do list / token usage riding along on any /event.
+static void noteExtras(JsonDocument& in, Session* s) {
+  if (in["todo"].is<JsonObject>()) {
+    JsonObject t = in["todo"];
+    s->todoTotal = t["total"] | 0; s->todoDone = t["done"] | 0; s->todoSkip = t["skip"] | 0;
+    s->todoNow = (const char*)(t["now"] | "");
+    s->nTodo = 0;
+    for (JsonArray it : t["items"].as<JsonArray>()) {
+      if (s->nTodo >= MAX_TODO) break;
+      String st = it[0] | "p";
+      s->todo[s->nTodo].st = st.length() ? st[0] : 'p';
+      s->todo[s->nTodo].text = (const char*)(it[1] | "");
+      s->nTodo++;
+    }
+  }
+  if (in["usage"].is<JsonObject>()) {
+    JsonObject u = in["usage"];
+    s->tokIn = u["in"] | 0UL; s->tokOut = u["out"] | 0UL; s->tokCR = u["cr"] | 0UL; s->tokCW = u["cw"] | 0UL;
+    s->ctx = u["ctx"] | 0UL;
+    String m = u["model"] | "";
+    if (m.length()) s->model = m;
+    s->hasUsage = true;
+    noteLedger(s->id, u["day"] | "", u["today"] | 0UL);
+  }
+}
+
 static void hEvent() {
   if (!authed()) return;
   JsonDocument in; if (!readBody(in)) return;
   Session* s; noteSession(in, s);
+  noteExtras(in, s);
   String ev = in["event"] | "";
   if (in["typed"] | false) noteKeyboard();   // a prompt typed in the terminal: you're at the desk
 
@@ -524,6 +592,7 @@ static void hPermissionNew() {
   a->tool = (const char*)(in["tool"] | "tool");
   a->detail = (const char*)(in["detail"] | "");
   a->project = s->project;
+  a->session = s->id;
   a->always = (const char*)(in["always"] | "");
   a->risk = (const char*)(in["risk"] | "");
   a->riskWhy = (const char*)(in["risk_why"] | "");
@@ -555,7 +624,9 @@ static void hPermissionPoll() {
       default:      st = "skip";  a->used = false; break;
     }
   }
-  JsonDocument out; out["state"] = st; sendJson(out);
+  JsonDocument out; out["state"] = st;
+  if (a && a->decision == D_DENY && a->reason.length()) out["reason"] = a->reason;
+  sendJson(out);
 }
 
 // POST /stop {session, project, kind?, title?, last, macros:[{label,text}]} -> {"id":N}
@@ -616,8 +687,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html><html><head><meta
 .d{color:#999;font-size:13px;word-break:break-word}button{font:inherit;border:0;border-radius:8px;padding:9px 12px;margin:3px 3px 0 0;background:#333;color:#eee}
 .ok{background:#1a5}.no{background:#b33}.ac{background:#f90;color:#000}textarea,select{width:100%;box-sizing:border-box;font:inherit;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:8px;margin-top:6px}
 .row{display:flex;justify-content:space-between;align-items:center}.risk{border:1px solid #b33}.rk{color:#f55;font-weight:600}
-pre{white-space:pre-wrap;word-break:break-word;margin:6px 0;font-size:13px;color:#bbb}.add{color:#5c5}.del{color:#e66}</style></head><body><main>
-<div class=row><h3>ClaudeStick</h3><span><button id=rm onclick="act({action:'remote'})"></button> <a href="#" id=st style="color:#888">settings</a></span></div>
+pre{white-space:pre-wrap;word-break:break-word;margin:6px 0;font-size:13px;color:#bbb}.add{color:#5c5}.del{color:#e66}
+.bar{height:6px;background:#333;border-radius:3px;margin:6px 0}.bar i{display:block;height:6px;background:#1a5;border-radius:3px}
+.td{font-size:13px;margin:2px 0}.td.c{color:#666;text-decoration:line-through;background:none;padding:0}.td.i{color:#f90}summary{color:#999;font-size:13px}</style></head><body><main>
+<div class=row><h3>ClaudeStick <span id=tk class=d></span></h3><span><button id=rm onclick="act({action:'remote'})"></button> <a href="#" id=st style="color:#888">settings</a></span></div>
 <div id=ub></div><div id=ap></div><div id=ch></div><div id=ss></div>
 <div class=c><div class=t>Send to Claude</div><select id=sel></select>
 <textarea id=tx rows=3 placeholder="Type an instruction..."></textarea>
@@ -628,16 +701,20 @@ const T=new URLSearchParams(location.search).get('t')||localStorage.cst||'';if(T
 const e=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
 async function act(b){await api('/act',b);load()}
+function dn(id){const t=prompt('Tell Claude why not (it gets this message):');if(t!==null)act({action:'deny',id,text:t})}
+const K=n=>n<1e4?String(n):n<1e6?(n/1e3).toFixed(n<1e5?1:0)+'k':(n/1e6).toFixed(2)+'M';
+const todo=t=>!t?'':`<div class=bar><i style="width:${100*t.done/Math.max(1,t.total)}%"></i></div><details${t.now?' open':''}><summary>${t.done}/${t.total} ${e(t.now||'')}</summary>${t.items.map(i=>`<div class="td ${i[0]}">${i[0]=='c'?'&#10003;':i[0]=='i'?'&#9656;':'&middot;'} ${e(i[1])}</div>`).join('')}</details>`;
+const use=u=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache read ${K(u.cr)}) &middot; context ${K(u.ctx)}${u.model?' &middot; '+e(u.model):''}</div>`;
 function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
 async function load(){try{S=await api('/state')}catch(x){return}
-ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
+ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';tk.textContent=S.tokens_today?K(S.tokens_today)+' tok today':'';rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
 const diff=t=>e(t).split('\n').map(l=>l.startsWith('+ ')?`<span class=add>${l}</span>`:l.startsWith('- ')?`<span class=del>${l}</span>`:l).join('\n');
 ap.innerHTML=(S.approvals||[]).map(a=>`<div class="c ${a.risk=='high'?'risk':''}"><div class=t>${a.risk=='high'?'<span class=rk>DANGER</span> ':''}Approve? ${e(a.tool)} <span class=d>${e(a.project)}</span></div>${a.risk_why?`<div class=rk>${e(a.risk_why)}</div>`:''}<pre>${diff(a.detail)}</pre>
-<button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
+<button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button class=no onclick="dn(${a.id})">Deny + note</button><button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
 ch.innerHTML=(S.choices||[]).map(c=>`<div class=c><div class=t>${c.kind=='question'?'Question':'Done'} <span class=d>${e(c.project)}</span></div><div class=d>${e(c.title||c.last)}</div>
 ${c.options.map((o,i)=>`<button class=ac onclick="act({action:'choose',id:${c.id},index:${i}})">${e(o)}</button>`).join('')}<button onclick="act({action:'dismiss',id:${c.id}})">Dismiss</button></div>`).join('');
 const v=sel.value;sel.innerHTML=(S.sessions||[]).map(s=>`<option value="${e(s.id)}">${e(s.project)} (${e(s.state)})</option>`).join('');if(v)sel.value=v;
-ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div></div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
+ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div>${todo(s.todo)}${use(s.usage)}</div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
 mc.innerHTML=(S.macros||[]).map((m,i)=>`<button onclick="act({action:'macro',session:sel.value,index:${i}})">${e(m)}</button>`).join('')}
 load();setInterval(load,2000)</script></body></html>)HTML";
 
@@ -658,7 +735,18 @@ static void hState() {
   for (auto& s : sessions) if (s.used) {
     JsonObject o = ss.add<JsonObject>();
     o["id"] = s.id; o["project"] = s.project; o["state"] = s.state; o["detail"] = s.detail;
+    if (s.todoTotal) {
+      JsonObject t = o["todo"].to<JsonObject>();
+      t["done"] = s.todoDone; t["total"] = s.todoTotal; t["now"] = s.todoNow; t["skip"] = s.todoSkip;
+      JsonArray it = t["items"].to<JsonArray>();
+      for (int i = 0; i < s.nTodo; i++) { JsonArray e = it.add<JsonArray>(); e.add(String(s.todo[i].st)); e.add(s.todo[i].text); }
+    }
+    if (s.hasUsage) {
+      JsonObject u = o["usage"].to<JsonObject>();
+      u["in"] = s.tokIn; u["out"] = s.tokOut; u["cr"] = s.tokCR; u["cw"] = s.tokCW; u["ctx"] = s.ctx; u["model"] = s.model;
+    }
   }
+  out["tokens_today"] = tokensToday();
   JsonArray as = out["approvals"].to<JsonArray>();
   for (auto& a : approvals) if (a.used && a.decision == D_PENDING) {
     JsonObject o = as.add<JsonObject>();
@@ -719,6 +807,7 @@ static void hAct() {
     Approval* a = nullptr;
     for (auto& x : approvals) if (x.used && x.id == id && x.decision == D_PENDING) a = &x;
     int8_t d = action == "approve" ? D_ALLOW : action == "always" ? D_ALWAYS : action == "deny" ? D_DENY : D_SKIP;
+    if (a && d == D_DENY && in["text"].is<const char*>()) a->reason = in["text"].as<const char*>();
     if (a) decide(a, d); else ok = false;
   } else if (action == "choose" || action == "dismiss") {
     StopReq* r = nullptr;
@@ -1371,11 +1460,22 @@ static String titleBase() {
 
 // ---- screens
 
-static uint32_t holdHintUntil = 0;   // "hold A to allow" nudge on risky cards
+static uint32_t holdHintUntil = 0;   // "double-press A" nudge on risky cards / "needs a hold" in the menu
+
+// 1234 -> "1234", 12345 -> "12.3k", 1234567 -> "1.23M"
+static String fmtTok(uint32_t n) {
+  char b[12];
+  if (n < 10000) snprintf(b, sizeof b, "%lu", (unsigned long)n);
+  else if (n < 100000) snprintf(b, sizeof b, "%.1fk", n / 1000.0);
+  else if (n < 1000000) snprintf(b, sizeof b, "%luk", (unsigned long)(n / 1000));
+  else if (n < 100000000) snprintf(b, sizeof b, "%.2fM", n / 1000000.0);
+  else snprintf(b, sizeof b, "%luM", (unsigned long)(n / 1000000));
+  return b;
+}
 
 static void drawApproval(Approval* a) {
   bool risky = a->risk == "high";
-  String hint = risky ? "hold A allow  B deny" : a->always.length() ? "A ok  hold A always  B no" : "A allow  B deny";
+  String hint = risky ? "2x A allow  B deny" : a->always.length() ? "A ok  2x A always  B no" : "A allow  B deny";
   frame(risky ? "!! danger !!" : a->src == SRC_BLE ? "approve? desktop" : "approve?", risky ? C_BAD : C_CLAUDE, hint);
   int y = TOP + 2;
   txt("$ " + fit(a->tool, PANE_CHARS - 2), PANE_X, y, risky ? C_BAD : C_CLAUDE); y += LINE_H;
@@ -1384,8 +1484,8 @@ static void drawApproval(Approval* a) {
   spr.drawFastHLine(PANE_X, y, PANE_W - 6, risky ? C_BAD : C_FRAME);
   int rows = (BOTTOM - (y + 4)) / LINE_H - (a->src == SRC_WIFI ? 1 : 0);
   textBlock(a->detail, y + 4, rows, C_FG, true);
-  String foot = millis() < holdHintUntil ? "hold A to allow this one" :
-                a->always.length() ? "always: " + a->always : a->src == SRC_WIFI ? "pwr: answer at keyboard" : "";
+  String foot = millis() < holdHintUntil ? "double-press A to allow" :
+                a->always.length() ? "2x always: " + a->always : a->src == SRC_WIFI ? "hold A: say why not" : "";
   if (foot.length()) txt(fit(foot, PANE_CHARS), PANE_X, BOTTOM - LINE_H + 2, millis() < holdHintUntil ? C_YEL : C_DIM);
   int pending = 0;
   for (auto& x : approvals) if (x.used && x.decision == D_PENDING) pending++;
@@ -1448,15 +1548,15 @@ static void drawHelp() {
   auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
   line("A front  B side  P power", C_DIM);
   line("approve: A ok  B no", C_FG);
-  line("  hold A: always allow", C_FG);
-  line("  danger: hold A to ok", C_BAD);
+  line("  2x A: always allow", C_FG);
+  line("  danger: 2x A to ok", C_BAD);
+  line("  hold A: no + say why", C_FG);
   line("  P: answer at keyboard", C_FG);
-  line("lists: B next  P back up", C_FG);
-  line("  A pick  hold B: close", C_FG);
+  line("lists: B/P move  A pick", C_FG);
+  line("home: A details  B: menu", C_FG);
   line("hold A: talk to claude", C_CLAUDE);
-  line("hold B: menu", C_FG);
+  line("hold B: back / menu", C_FG);
   line("tilt: scroll long text", C_DIM);
-  line("A+B at power-on: reset", C_DIM);
 }
 
 // Hardware test: live readings to check a new Stick in a minute.
@@ -1525,7 +1625,8 @@ static void drawVoiceCard() {
     return;
   }
   Session* s = findSession(voiceTarget, false);
-  frame(voiceStopReq ? "reply?" : "send to claude?", C_CLAUDE, "A send  B discard  hold A redo");
+  frame(voiceApproval ? "deny + tell claude?" : voiceStopReq ? "reply?" : "send to claude?",
+        voiceApproval ? C_BAD : C_CLAUDE, "A send  B discard  hold A redo");
   txt("@" + fit(s ? sessionLabel(*s) : String("?"), PANE_CHARS - 1), PANE_X, TOP + 2, C_DIM);
   spr.drawFastHLine(PANE_X, TOP + 2 + LINE_H, PANE_W - 6, C_FRAME);
   textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H, 10, C_FG, true);
@@ -1583,7 +1684,9 @@ static void drawInfo() {
   line("ok " + String(stats.appr) + "  no " + String(stats.deny), C_FG);
   line(String("tilt ") + (tiltMode == 0 ? "off" : tiltMode > 0 ? "on" : "flipped") + "  voice " + (conf.sttUrl.length() ? "on" : "off"), C_DIM);
   line("reset: " + resetWhy + (safeMode ? "  SAFE MODE" : ""), safeMode ? C_YEL : C_DIM);
-  if (desk.lastBeat) line("desk tok " + String(desk.tokensToday), C_DIM);
+  String tk = "cli today " + fmtTok(tokensToday());
+  if (desk.lastBeat) tk += "  desk " + fmtTok(desk.tokensToday);
+  line(tk, C_DIM);
 }
 
 static void drawPasskey(uint32_t pk) {
@@ -1628,10 +1731,60 @@ static void drawSetup() {
   }
 }
 
+// Session details: to-do list and token usage. B / PWR switch session.
+static void drawDetail() {
+  Session* s = targetSession();
+  frame("session", C_BLUE, "B/P next  A back  hold A talk");
+  if (!s) { txt("no claude session yet", PANE_X, TOP + 20, C_DIM); return; }
+  int y = TOP + 2;
+  String st = s->state;
+  txt(fit(sessionLabel(*s), PANE_CHARS - st.length() - 1), PANE_X, y, C_FG);
+  txt(st, W - 6 - spr.textWidth(st), y, stateColor(st));
+  y += LINE_H;
+  if (s->hasUsage) {
+    String u = "tok " + fmtTok(s->tokIn + s->tokOut + s->tokCW) + "  ctx " + fmtTok(s->ctx);
+    txt(fit(u, PANE_CHARS), PANE_X, y, C_DIM); y += LINE_H;
+  }
+  spr.drawFastHLine(PANE_X, y + 1, PANE_W - 6, C_FRAME);
+  y += 5;
+  if (!s->todoTotal) {
+    txt("no to-do list", PANE_X, y, C_DIM); y += LINE_H;
+    textBlock(s->detail, y + 2, (BOTTOM - y) / LINE_H, C_DIM, false);
+    return;
+  }
+  // progress bar
+  String p = String(s->todoDone) + "/" + String(s->todoTotal);
+  txt(p, PANE_X, y, s->todoDone == s->todoTotal ? C_OK : C_FG);
+  int bx = PANE_X + spr.textWidth(p) + 4, bw = W - 8 - bx;
+  spr.drawRect(bx, y, bw, 7, C_FRAME);
+  spr.fillRect(bx + 1, y + 1, (bw - 2) * s->todoDone / max(1, (int)s->todoTotal), 5, C_OK);
+  y += LINE_H + 1;
+  // items, scrolled by tilt; starts so the current item is visible
+  int rows = (BOTTOM - y) / LINE_H;
+  int cur = 0;
+  for (int i = 0; i < s->nTodo; i++) if (s->todo[i].st == 'i') { cur = i; break; }
+  int maxFirst = max(0, (int)s->nTodo - rows);
+  static uint32_t lastKey = 0;
+  if (scrollKey != lastKey) { lastKey = scrollKey; scrollLine = max(0, min(cur - 1, maxFirst)); }
+  int first = max(0, min(scrollLine, maxFirst));
+  scrollLine = first;
+  int y0 = y;
+  for (int i = first; i < s->nTodo && i < first + rows; i++) {
+    const TodoItem& t = s->todo[i];
+    uint16_t c = t.st == 'c' ? C_FRAME : t.st == 'i' ? C_CLAUDE : C_FG;
+    String mark = t.st == 'c' ? "x " : t.st == 'i' ? "> " : "- ";
+    txt(mark + fit(t.text, PANE_CHARS - 2), PANE_X, y, c);
+    y += LINE_H;
+  }
+  int hidden = (int)s->todoTotal - (int)s->todoSkip - (int)s->nTodo;
+  if (first + rows < s->nTodo || hidden > 0) txt("v", W - 10, BOTTOM - LINE_H, C_DIM);
+  if (first > 0 || s->todoSkip) txt("^", W - 10, y0, C_DIM);
+}
+
 static void drawHome() {
   String title = titleBase();
   if (pinned.length()) title += " *";
-  frame(title, remoteMode ? C_CLAUDE : C_FG, "A next  hold A talk  hold B menu");
+  frame(title, remoteMode ? C_CLAUDE : C_FG, "A details  hold A talk  B menu");
   int y = TOP + 2;
   if (desk.lastBeat) {
     txt("desktop " + String(desk.running) + "/" + String(desk.total), PANE_X, y, C_BLUE); y += LINE_H;
@@ -1650,7 +1803,18 @@ static void drawHome() {
     txt(st, W - 6 - spr.textWidth(st), y, stateColor(s.state));
     if (isT) spr.drawFastHLine(PANE_X + 7, y + 8, spr.textWidth(fit(head, PANE_CHARS - 10)), C_CLAUDE);
     y += LINE_H;
-    if (s.detail.length() && y <= BOTTOM - LINE_H) { txt("  " + fit(s.detail, PANE_CHARS - 2), PANE_X, y, C_DIM); y += LINE_H; }
+    if (y <= BOTTOM - LINE_H && (s.detail.length() || s.todoTotal)) {
+      int x = PANE_X + 12, room = PANE_CHARS - 2;
+      String d = s.detail;
+      if (s.todoTotal) {
+        String pr = String(s.todoDone) + "/" + String(s.todoTotal);
+        txt(pr, x, y, s.todoDone == s.todoTotal ? C_OK : C_CLAUDE);
+        x += spr.textWidth(pr) + 6; room -= pr.length() + 1;
+        if (s.todoNow.length() && s.state != "done") d = s.todoNow;
+      }
+      txt(fit(d, room), x, y, C_DIM);
+      y += LINE_H;
+    }
     y += 2; shown++;
   }
   if (!shown && !desk.lastBeat && ssid.length()) {
@@ -1670,13 +1834,17 @@ static void draw() {
   Approval* a = topApproval();
   StopReq* r = topStop();
   uint32_t key = pk ? 1 : a ? a->id : r ? r->id : 0;
-  if (voiceState == V_CONFIRM && !pk && !a) key = 0x7FFFFFFF;
+  if (voiceState == V_CONFIRM && !pk) key = 0x7FFFFFFF;
   else if (!pk && !a && !r && screen == SCR_HOME && updatePromptDue()) key = 0x7FFFFFFE;
+  else if (!pk && !a && !r && screen == SCR_DETAIL) {
+    Session* t = targetSession();
+    key = 0x7FFF0000 + (t ? (uint32_t)(t - sessions) + 1 : 0);
+  }
   if (key != scrollKey) { scrollKey = key; scrollLine = 0; }
 
   if (pk) drawPasskey(pk);
+  else if (voiceState == V_CONFIRM || voiceState == V_ERROR) drawVoiceCard();   // finish what you said first
   else if (a) drawApproval(a);
-  else if (voiceState == V_CONFIRM || voiceState == V_ERROR) drawVoiceCard();
   else if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) drawNotice();
   else if (r) drawChoice(r);
   else if (screen == SCR_HOME && updatePromptDue()) drawUpdatePrompt();
@@ -1686,6 +1854,7 @@ static void draw() {
   else if (screen == SCR_INFO) drawInfo();
   else if (screen == SCR_HELP) drawHelp();
   else if (screen == SCR_TEST) drawTest();
+  else if (screen == SCR_DETAIL) drawDetail();
   else drawHome();
   buddyPane(bs, mood, moodColor);
   spr.pushSprite(0, 0);
@@ -1713,10 +1882,37 @@ static void listNav(int total, bool next, bool prev) {
   if (prev) { menuIdx = (menuIdx + total - 1) % total; beep(0); }
 }
 
+// Double-press A on an approval card = always allow (or allow a dangerous one).
+// A single press there waits DOUBLE_MS to see if a second one follows.
+static const uint32_t DOUBLE_MS = 350;
+static uint32_t aFirstAt = 0, aFirstId = 0;
+
+static bool needsDouble(Approval* a) { return a->risk == "high" || a->always.length(); }
+
+static void singleA(Approval* a) {
+  if (a->risk == "high") { holdHintUntil = millis() + 2500; beep(3); dirty = true; }
+  else decide(a, D_ALLOW);
+}
+
+static void doubleTimeout() {
+  if (!aFirstAt || millis() - aFirstAt < DOUBLE_MS) return;
+  aFirstAt = 0;
+  Approval* a = topApproval();
+  if (a && a->id == aFirstId) singleA(a);
+}
+
+static void cycleSession(int dir) {
+  for (int k = 1; k <= MAX_SESSIONS; k++) {
+    int i = (focusSession + dir * k + 2 * MAX_SESSIONS) % MAX_SESSIONS;
+    if (sessions[i].used) { focusSession = i; beep(0); return; }
+  }
+}
+
 static void buttons() {
   bool aClick = M5.BtnA.wasClicked(), aHold = M5.BtnA.wasHold();
   bool bClick = M5.BtnB.wasClicked(), bHold = M5.BtnB.wasHold();
   bool pClick = M5.BtnPWR.wasClicked();
+  doubleTimeout();
   if (!(aClick || aHold || bClick || bHold || pClick)) return;
 
   if (dimmed) { touch(); return; }      // first press only wakes the screen
@@ -1729,28 +1925,40 @@ static void buttons() {
   }
   if (setupDone) noteStick();           // answering on the Stick = you're remote (auto mode)
 
-  if (Approval* a = topApproval()) {
-    bool risky = a->risk == "high";
-    if (aClick && risky) { holdHintUntil = millis() + 2500; beep(3); }
-    else if (aClick) decide(a, D_ALLOW);
-    else if (aHold) decide(a, risky || !a->always.length() ? D_ALLOW : D_ALWAYS);
-    else if (bClick) decide(a, D_DENY);
-    else if (pClick && a->src == SRC_WIFI) decide(a, D_SKIP);
-    return;
-  }
-
+  // Voice result first: an approval that arrives while you're reading it waits.
   if (voiceState == V_ERROR) { voiceState = V_IDLE; return; }
-  if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) { noticeUntil = 0; return; }
   if (voiceState == V_CONFIRM) {
     if (aClick) voiceSend();
-    else if (bClick || bHold) { voiceState = V_IDLE; beep(0); }
+    else if (bClick || bHold) { voiceState = V_IDLE; voiceApproval = 0; beep(0); }
     else if (aHold) {   // redo, same target
+      if (voiceApproval) { voiceDenyCapture(approvalById(voiceApproval)); return; }
       StopReq* card = nullptr;
       for (auto& x : stops) if (voiceStopReq && x.used && x.id == voiceStopReq && x.result == -1) card = &x;
       voiceCapture(card);
     }
     return;
   }
+
+  if (Approval* a = topApproval()) {
+    if (aFirstAt && a->id != aFirstId) aFirstAt = 0;           // card changed under the first press
+    if (aClick && needsDouble(a)) {
+      if (aFirstAt && millis() - aFirstAt < DOUBLE_MS) {       // second press
+        aFirstAt = 0;
+        decide(a, a->risk == "high" || !a->always.length() ? D_ALLOW : D_ALWAYS);
+      } else { aFirstAt = millis(); aFirstId = a->id; }
+    }
+    else if (aClick) decide(a, D_ALLOW);
+    else if (aHold) {
+      aFirstAt = 0;
+      if (a->src == SRC_WIFI) voiceDenyCapture(a);
+      else notice("voice", "voice replies work with claude code (cli) sessions", C_DIM, 2500);
+    }
+    else if (bClick) { aFirstAt = 0; decide(a, D_DENY); }
+    else if (pClick && a->src == SRC_WIFI) { aFirstAt = 0; decide(a, D_SKIP); }
+    return;
+  }
+
+  if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) { noticeUntil = 0; return; }
 
   if (StopReq* r = topStop()) {
     int total = r->nMacros + 1;
@@ -1823,6 +2031,14 @@ static void buttons() {
 
   if (screen == SCR_INFO || screen == SCR_HELP) { screen = SCR_HOME; return; }
 
+  if (screen == SCR_DETAIL) {
+    if (aHold) voiceCapture(nullptr);                 // talk to the session you're looking at
+    else if (bClick) cycleSession(1);
+    else if (pClick) cycleSession(-1);
+    else { screen = SCR_HOME; beep(0); }            // A or hold B: back
+    return;
+  }
+
   if (!setupDone) {   // first-time setup screen: only "skip" is offered
     if (bHold) { setupDone = true; prefs.putBool("setup", true); beep(0); }
     return;
@@ -1831,12 +2047,12 @@ static void buttons() {
   // home
   if (aHold) voiceCapture(nullptr);
   else if (bHold) { screen = SCR_ACTIONS; menuIdx = 0; beep(0); }
-  else if (aClick) {   // cycle focused session
-    for (int k = 1; k <= MAX_SESSIONS; k++) {
-      int i = (focusSession + k + MAX_SESSIONS) % MAX_SESSIONS;
-      if (sessions[i].used) { focusSession = i; break; }
-    }
+  else if (aClick) {   // details of the focused session
+    Session* t = targetSession();
+    if (t) focusSession = t - sessions;
+    screen = SCR_DETAIL; beep(0);
   }
+  else if (bClick) { screen = SCR_ACTIONS; menuIdx = 0; beep(0); }
 }
 
 // ------------------------------------------------------------ setup/loop ---

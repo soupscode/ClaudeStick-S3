@@ -36,6 +36,9 @@ MARK = "claudestick_hook.py"
 QUICK = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "SessionEnd"]
 
 
+TODO_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+
 def load_json(path, default):
     try:
         with open(path) as f:
@@ -117,7 +120,7 @@ def install(args):
     # Local config only holds how to reach the Stick; macros, waits and alerts live on
     # the Stick (settings page) and are fetched by the hook.
     cfg = load_json(CONFIG, None) or {}
-    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host")}
+    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env")}
     cfg.setdefault("port", 7880)
     for k in ("host", "token", "port"):
         v = getattr(args, k)
@@ -140,6 +143,21 @@ def install(args):
     add("PermissionRequest", long_wait)
     add("Stop", long_wait)
 
+    # Newer Claude models don't load the to-do tools unless asked; the Stick's
+    # to-do view needs them. Only set it if you haven't chosen either way.
+    env = settings.setdefault("env", {})
+    if args.no_todo_tools:
+        if cfg.get("added_todo_env"):
+            env.pop(TODO_ENV, None)
+            cfg.pop("added_todo_env", None)
+    elif TODO_ENV not in env:
+        env[TODO_ENV] = "1"
+        cfg["added_todo_env"] = True
+        print(f"env     -> {TODO_ENV}=1 (to-do list on the Stick; --no-todo-tools to skip)")
+    if not env:
+        settings.pop("env", None)
+    save_json(CONFIG, cfg)
+
     backup_settings()
     save_json(SETTINGS, settings)
     print(f"hooks   -> {SETTINGS}")
@@ -149,7 +167,12 @@ def install(args):
 def uninstall(_args):
     if os.path.exists(SETTINGS):
         backup_settings()
-        save_json(SETTINGS, strip_ours(load_json(SETTINGS, {})))
+        settings = strip_ours(load_json(SETTINGS, {}))
+        if (load_json(CONFIG, {}) or {}).get("added_todo_env"):
+            settings.get("env", {}).pop(TODO_ENV, None)
+            if not settings.get("env"):
+                settings.pop("env", None)
+        save_json(SETTINGS, settings)
         print("removed ClaudeStick hooks from Claude Code settings")
     print(f"left {HOME_DIR} in place (delete it to remove your config/macros)")
 
@@ -178,13 +201,15 @@ def test(_args=None):
             save_json(CONFIG, local)
     ok = dev.call("POST", "/event", {"session": "install-test", "project": "install-test",
                                      "event": "ready", "detail": "hello from install.py"})
-    print("token OK" if ok is not None else "token REJECTED - copy it from the device (hold A on home screen)")
+    print("token OK" if ok is not None else "token REJECTED - copy it from the device (menu > info)")
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="device IP or hostname (default claudestick.local)")
-    p.add_argument("--token", help="token shown on the device (hold A on the home screen)")
+    p.add_argument("--token", help="token shown on the device (menu > info)")
+    p.add_argument("--no-todo-tools", action="store_true",
+                   help=f"don't set {TODO_ENV}=1 (the Stick's to-do view stays empty on newer models)")
     p.add_argument("--port", type=int)
     p.add_argument("--uninstall", action="store_true")
     p.add_argument("--test", action="store_true")

@@ -24,18 +24,21 @@ The mode switch reaches Claude at the next hook (tool result, prompt, or Done-me
 
 ## Screen and buttons
 
-The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies on the left (from claude-desktop-buddy), content on the right, and key hints on the bottom border. The buddy reacts: busy while Claude works, attention when it needs you, a celebration when it finishes, dizzy on errors, hearts when you approve. Pick a species from the menu. Previews are in `docs/screens.png` and `docs/buddies.png`.
+The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies on the left (from claude-desktop-buddy), content on the right, and key hints on the bottom border. The buddy reacts: busy while Claude works, attention when it needs you, a celebration when it finishes, dizzy on errors, hearts when you approve. Pick a species from the menu. Previews are in `docs/screens.png`, `docs/screens-v0.7.png` and `docs/buddies.png`.
 
-**A** = front button, **B** = side button, **P** = power button (short press), *hold* ≈ 0.7 s.
+**A** = front button, **B** = side button, **P** = power button (short press), *hold* ≈ 0.7 s, *2x* = double-press within 0.35 s.
 
-| Screen | A | hold A | B | hold B | P |
-|---|---|---|---|---|---|
-| Approval | allow | **always allow** (writes a permission rule) | deny | — | answer at keyboard |
-| Approval, **DANGER** (red) | (nudge) | allow once | deny | — | answer at keyboard |
-| Question / Done menu | pick | **talk** (spoken reply) | next | dismiss | previous |
-| Home | next session | **talk to Claude** | — | **menu** | — |
-| Menu / lists | select | — | next | back | previous |
-| Voice result | send | redo | discard | discard | — |
+On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
+
+| Screen | A | 2x A | hold A | B | hold B | P |
+|---|---|---|---|---|---|---|
+| Approval | allow | **always allow** (writes a permission rule) | **deny + say why** | deny | — | answer at keyboard |
+| Approval, **DANGER** (red) | (nudge) | allow once | deny + say why | deny | — | answer at keyboard |
+| Question / Done menu | pick | — | **talk** (spoken reply) | next | dismiss | previous |
+| Home | **session details** | — | **talk to Claude** | menu | menu | — |
+| Session details | back | — | talk to this session | next session | back | previous session |
+| Menu / lists | select | — | — | next | back | previous |
+| Voice result | send | — | redo | discard | discard | — |
 
 - **Always allow** remembers a rule that fits the request:
   - `Bash(git status *)` for this project (`.claude/settings.local.json`)
@@ -44,7 +47,9 @@ The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies o
   - an MCP tool
 
   The card's last line shows exactly what will be remembered. It isn't offered for compound shell commands or dangerous ones.
-- **DANGER cards** (red) need a hold to allow, and never offer "always". Triggers include:
+- **Single A on a card that offers "always"** waits 0.35 s to see if a second press follows, so plain approvals there are a hair slower. Cards without "always" allow instantly.
+- **Deny + say why:** hold A on an approval, say what Claude should do instead, then A. Claude gets the approval denied with your words as the reason. Same as **Deny + note** on the phone. Wi-Fi (CLI) sessions only.
+- **DANGER cards** (red) need a double-press to allow, and never offer "always". Triggers include:
   - `rm -rf`, force pushes, `git reset --hard`
   - `zfs`/`zpool destroy`, `pct`/`qm destroy`
   - `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`
@@ -55,6 +60,15 @@ The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies o
 - **Tilt to scroll:** tip the Stick forward or back on long commands. Use the serial command `tilt flip` or `tilt off` if it feels wrong.
 - **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy · button help · info · new token (hold A) · re-run setup.
 
+### Session details: to-do list and tokens
+
+Tap A on Home to see the focused session:
+
+- **To-do list:** progress bar, `x` done, `>` current step (orange), `-` pending. Tilt to scroll. Home shows `2/7 <current step>` under each session.
+- **Tokens:** `tok` = input + output + cache writes for the session; `ctx` = how full the context is right now. **Menu → info** and the phone header show today's total across all CLI sessions; the phone also breaks out input, output and cache reads.
+
+Claude only keeps a to-do list when its to-do tools are loaded, and newer Claude models don't load them by default. The installer sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in `~/.claude/settings.json` for you unless you already set it either way. Pass `--no-todo-tools` to skip that; uninstall removes it only if the installer added it. Tokens work either way: the hook reads them from the session transcript.
+
 ### Push-to-talk
 
 Hold A, speak (up to 20 s), and release. The Stick sends the audio to a speech-to-text server, shows you the text, and A sends it. It answers the Done/Question card if one is up; otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works. On the homelab, run [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) in an LXC; `Systran/faster-whisper-small` is fine on CPU. Then set the URL under **settings → voice**.
@@ -63,7 +77,7 @@ Hold A, speak (up to 20 s), and release. The Stick sends the audio to a speech-t
 
 Every terminal with the hooks installed shows up on Home, named `folder@branch` (the branch is left off for main/master). Set `CLAUDESTICK_NAME=whatever` before `claude` to label a session yourself. Two sessions in the same folder get a `#abcd` suffix.
 
-- **A** on Home moves the focus (underlined). The menu's Stop and macros, and the phone's default target, all go to the focused session.
+- **A** on Home opens the focused session (underlined); **B / P** there move the focus. The menu's Stop and macros, and the phone's default target, all go to the focused session.
 - **Menu → tie to session** pins one session (`*`). The Stick then only answers that session: approvals, questions and Done menus from other sessions fall straight through to their own terminals. Choose *all sessions* to unpin. The phone page has the same Pin/Unpin buttons.
 
 ## First flash checklist

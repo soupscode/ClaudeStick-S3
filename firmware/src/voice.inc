@@ -1,5 +1,5 @@
 // ---------------------------------------------------------- push-to-talk ---
-// Hold A (anywhere except an approval card) to talk. Audio is recorded at 16 kHz
+// Hold A to talk (on an approval card: deny it and tell Claude why). Audio is recorded at 16 kHz
 // while the button is held, sent as a WAV to an OpenAI-compatible speech-to-text
 // endpoint (e.g. speaches / faster-whisper on your homelab), and the text is shown
 // for confirmation before it goes to Claude like any phone-typed instruction.
@@ -14,6 +14,7 @@ enum VoiceState : uint8_t { V_IDLE, V_REC, V_THINK, V_CONFIRM, V_ERROR };
 static VoiceState voiceState = V_IDLE;
 static String     voiceText, voiceErr, voiceTarget;   // target = session id
 static uint32_t   voiceStopReq = 0;                   // Done/Question card it answers, if any
+static uint32_t   voiceApproval = 0;                  // approval it denies (with what you said), if any
 static uint32_t   voiceErrUntil = 0;
 static size_t     voiceLen = 0;
 static int        voiceLevel = 0;
@@ -70,15 +71,36 @@ static bool sttRequest(String& outText) {
 static void drawVoiceRec(uint32_t ms);   // defined with the other screens
 
 // Blocks while A is held: records, then transcribes. Called from buttons().
-static void voiceCapture(StopReq* card) {
-  if (!conf.sttUrl.length()) { voiceFail("voice isn't set up: open settings"); return; }
-  if (WiFi.status() != WL_CONNECTED) { voiceFail("no wi-fi"); return; }
+static void voiceRecord();
+
+static bool voiceReady() {
+  if (!conf.sttUrl.length()) { voiceFail("voice isn't set up: open settings"); return false; }
+  if (WiFi.status() != WL_CONNECTED) { voiceFail("no wi-fi"); return false; }
   if (!voiceBuf) voiceBuf = (int16_t*)ps_malloc(VOICE_MAX * sizeof(int16_t));
-  if (!voiceBuf) { voiceFail("out of memory"); return; }
+  if (!voiceBuf) { voiceFail("out of memory"); return false; }
+  return true;
+}
+
+static void voiceCapture(StopReq* card) {
+  if (!voiceReady()) return;
   Session* s = targetSession();
   voiceTarget = card ? card->session : (s ? s->id : String());
   voiceStopReq = card ? card->id : 0;
+  voiceApproval = 0;
   if (!voiceTarget.length()) { voiceFail("no claude session to talk to"); return; }
+  voiceRecord();
+}
+
+// Hold A on an approval card: record why not; A on the result denies with that message.
+static void voiceDenyCapture(Approval* a) {
+  if (!a) { voiceState = V_IDLE; voiceApproval = 0; dirty = true; return; }
+  if (!voiceReady()) return;
+  voiceTarget = a->session; voiceStopReq = 0; voiceApproval = a->id;
+  voiceRecord();
+  if (voiceState != V_CONFIRM) voiceApproval = 0;
+}
+
+static void voiceRecord() {
 
   M5.Speaker.end();                    // speaker and mic share the codec
   M5.Mic.begin();
@@ -115,6 +137,15 @@ static void voiceCapture(StopReq* card) {
 static void voiceSend() {
   Session* s = findSession(voiceTarget, false);
   bool ok = false;
+  if (voiceApproval) {
+    Approval* a = approvalById(voiceApproval);
+    voiceApproval = 0;
+    if (!a || a->decision != D_PENDING) { voiceFail("that approval was already answered"); return; }
+    a->reason = voiceText;
+    decide(a, D_DENY);
+    voiceState = V_IDLE; dirty = true;
+    return;
+  }
   if (voiceStopReq) {
     for (auto& x : stops)
       if (x.used && x.id == voiceStopReq && x.result == -1) { x.custom = voiceText; x.result = -3; ok = true; }

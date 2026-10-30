@@ -6,6 +6,7 @@
 Pages: phone remote http://localhost:<port>/?t=<token>, setup/settings http://localhost:<port>/setup
 Type at the prompt to press "buttons":
   a      approve top card / send selected option      A  always-allow top card
+  n TXT  deny top card and tell Claude why (hold-A voice on the Stick)
   b      deny top card / next option                  k  answer at keyboard
   d      dismiss the Done/Question card               s  stop the latest session
   m N    queue macro N for the latest session         t TEXT  send free text (like voice/phone)
@@ -107,6 +108,8 @@ def act(b):
                 d = "allow"
             if d == "skip":
                 note_kbd()
+            if d == "deny" and b.get("text"):
+                ap["reason"] = b["text"]
             ap["decision"] = d
             return True
         if a in ("choose", "dismiss"):
@@ -179,7 +182,7 @@ class H(BaseHTTPRequestHandler):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
             hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
-            return self.reply({"ok": True, "fw": "0.6.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+            return self.reply({"ok": True, "fw": "0.7.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
                                "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")
@@ -209,8 +212,12 @@ class H(BaseHTTPRequestHandler):
             if p == "/state":
                 return self.reply({
                     "remote": remote_now(), "remote_setting": CONF["remote"], "pinned": S["pinned"],
-                    "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"]}
+                    "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"],
+                                  **({"todo": v["todo"]} if v.get("todo", {}).get("total") else {}),
+                                  **({"usage": v["usage"]} if v.get("usage") else {})}
                                  for k, v in S["sessions"].items()],
+                    "tokens_today": sum(t for (sid, day), t in S.setdefault("ledger", {}).items()
+                                        if day == S.get("day")),
                     "approvals": [{"id": i, "tool": a["tool"], "detail": a["detail"], "project": a["project"], "src": "wifi",
                                    "always": a.get("always", ""), "risk": a.get("risk", ""), "risk_why": a.get("risk_why", "")}
                                   for i, a in S["approvals"].items() if a["decision"] == "pending"],
@@ -226,7 +233,7 @@ class H(BaseHTTPRequestHandler):
                 st = a["decision"]
                 if st != "pending":
                     del S["approvals"][rid]
-                return self.reply({"state": st})
+                return self.reply({"state": st, **({"reason": a["reason"]} if st == "deny" and a.get("reason") else {})})
             if p == "/stop":
                 r = S["stops"].get(rid)
                 if not r:
@@ -305,6 +312,14 @@ class H(BaseHTTPRequestHandler):
                     S["sessions"].pop(sid, None)
                     return self.reply({"stop": False, "inject": None, "remote": remote_now()})
                 s["state"], s["detail"] = ev, b.get("detail", "")
+                if isinstance(b.get("todo"), dict):
+                    s["todo"] = b["todo"]
+                if isinstance(b.get("usage"), dict):
+                    u = b["usage"]
+                    s["usage"] = {k: u.get(k) for k in ("in", "out", "cr", "cw", "ctx", "model")}
+                    if u.get("day"):
+                        S["day"] = max(S.get("day", ""), u["day"])
+                        S.setdefault("ledger", {})[(sid, u["day"])] = u.get("today", 0)
                 out = {"stop": False, "inject": None, "remote": remote_now()}
                 if b.get("can_stop") and s["stop"]:
                     out["stop"], s["stop"] = True, False
@@ -348,6 +363,8 @@ def press(cmd):
     with LOCK:
         pend = sorted(i for i, a in S["approvals"].items() if a["decision"] == "pending")
         stops = sorted(i for i, r in S["stops"].items() if r["result"] is None)
+    if c == "n" and pend:   # deny with a reason, like hold-A voice on the Stick
+        return act({"action": "deny", "id": pend[0], "text": cmd[2:]})
     if c in ("a", "A", "b", "k") and pend:
         return act({"action": {"a": "approve", "A": "always", "b": "deny", "k": "keyboard"}[c], "id": pend[0]})
     if c in ("a", "b", "d") and stops:

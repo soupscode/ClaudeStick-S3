@@ -204,7 +204,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
-#define EMBED_HOOK_SHA "61e8af304c94565ae60d6b51a32cf52baba8742028a985e0c5540cc48d61a752"
+#define EMBED_HOOK_SHA "14c7dbb502fdc7137c874cce286e1ea65434a3d7c5533c610a838ef4a740388e"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -241,10 +241,13 @@ UID = str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USERNAME", 
 DOWN_FILE = os.path.join(TMP, f"claudestick-down-{UID}")
 DISCOVER_FILE = os.path.join(TMP, f"claudestick-discover-{UID}")
 MODE_DIR = os.path.join(TMP, f"claudestick-mode-{UID}")
+SESS_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "sessions")   # per-session to-do list + token totals
 DOWN_BACKOFF_S = 20
 DISCOVER_BACKOFF_S = 120
 DEVICE_CFG_TTL_S = 60
 POLL_S = 0.4
+USAGE_EVERY_S = 20          # PostToolUse sends token totals at most this often
+TODO_MAX = 12
 
 DEFAULT_MACROS = [
     {"label": "Continue", "text": "Continue."},
@@ -708,6 +711,216 @@ def git_branch(cwd):
     return branch
 
 
+# ------------------------------------------------------------------ session tracking
+# Claude's to-do list (TodoWrite, or TaskCreate/TaskUpdate on newer Claude Code) and token
+# totals read from the session transcript, kept per session so each hook run only
+# reads what's new.
+
+def _sess_path(session):
+    return os.path.join(SESS_DIR, re.sub(r"[^A-Za-z0-9_-]", "_", session)[:80] + ".json")
+
+
+def load_sess(session):
+    st = _read_json(_sess_path(session)) or {}
+    st.setdefault("tasks", {})        # id -> {"t": subject, "a": activeForm, "s": status}
+    st.setdefault("order", [])
+    st.setdefault("usage", {})
+    return st
+
+
+def save_sess(session, st):
+    st["seen"] = int(time.time())
+    _write_json(_sess_path(session), st)
+
+
+def prune_sessions(max_age_days=14):
+    """Forget session files nobody has touched in two weeks."""
+    try:
+        cutoff = time.time() - max_age_days * 86400
+        for name in os.listdir(SESS_DIR):
+            path = os.path.join(SESS_DIR, name)
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+    except OSError:
+        pass
+
+
+def _task_id(inp):
+    v = inp.get("taskId") or inp.get("id") or inp.get("task_id")
+    return str(v) if v not in (None, "") else ""
+
+
+def track_tasks(st, tool, inp, resp):
+    """Apply one to-do tool call to the stored list. Returns True if it changed."""
+    inp = inp if isinstance(inp, dict) else {}
+    if tool == "TodoWrite":
+        todos = inp.get("todos") or []
+        st["tasks"], st["order"] = {}, []
+        for i, t in enumerate(todos):
+            if not isinstance(t, dict):
+                continue
+            tid = str(i + 1)
+            st["tasks"][tid] = {"t": t.get("content", ""), "a": t.get("activeForm") or t.get("active_form") or "",
+                                "s": t.get("status", "pending")}
+            st["order"].append(tid)
+        return True
+    if tool == "TaskCreate":
+        task = (resp or {}).get("task") if isinstance(resp, dict) else None
+        tid = str((task or {}).get("id") or "")
+        if not tid:  # older builds: ids are sequential
+            tid = str(max([int(x) for x in st["order"] if x.isdigit()] + [0]) + 1)
+        st["tasks"][tid] = {"t": inp.get("subject", ""), "a": inp.get("activeForm") or inp.get("active_form") or "",
+                            "s": "pending"}
+        if tid not in st["order"]:
+            st["order"].append(tid)
+        return True
+    if tool == "TaskUpdate":
+        tid = _task_id(inp)
+        if not tid:
+            return False
+        if inp.get("status") == "deleted":
+            st["tasks"].pop(tid, None)
+            st["order"] = [x for x in st["order"] if x != tid]
+            return True
+        t = st["tasks"].get(tid)
+        if t is None:  # created before we were watching
+            t = st["tasks"][tid] = {"t": inp.get("subject") or f"task {tid}", "a": "", "s": "pending"}
+            st["order"].append(tid)
+        if inp.get("status"):
+            t["s"] = inp["status"]
+        if inp.get("subject"):
+            t["t"] = inp["subject"]
+        if inp.get("activeForm") or inp.get("active_form"):
+            t["a"] = inp.get("activeForm") or inp.get("active_form")
+        return True
+    return False
+
+
+def todo_payload(st):
+    """Compact list for the Stick: done/total, what's happening now, and the items."""
+    items = [st["tasks"][i] for i in st["order"] if i in st["tasks"]]
+    if not items:
+        return {"total": 0, "done": 0, "now": "", "items": []}
+    done = sum(1 for t in items if t["s"] == "completed")
+    cur = next((t for t in items if t["s"] == "in_progress"), None)
+    # Show the unfinished end of long lists: the last few done items, then the rest.
+    first_open = next((i for i, t in enumerate(items) if t["s"] != "completed"), len(items))
+    start = max(0, min(first_open - 2, len(items) - TODO_MAX))
+    code = {"completed": "c", "in_progress": "i"}
+    return {"total": len(items), "done": done, "now": clip((cur["a"] or cur["t"]) if cur else "", 60),
+            "skip": start,
+            "items": [[code.get(t["s"], "p"), clip(t["t"], 48)] for t in items[start:start + TODO_MAX]]}
+
+
+def _local_day(ts):
+    """Transcript timestamps are UTC ISO strings; bucket tokens by the local calendar day."""
+    try:
+        import datetime
+        t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return t.astimezone().strftime("%Y-%m-%d")
+    except (ValueError, AttributeError, TypeError):
+        return time.strftime("%Y-%m-%d")
+
+
+def _short_model(m):
+    m = re.sub(r"^claude-", "", m or "")
+    return re.sub(r"-\d{8}$", "", m)
+
+
+def read_usage(st, transcript_path, max_bytes=8_000_000):
+    """Add token usage from transcript lines we haven't read yet. Returns True if anything changed."""
+    u = st["usage"]
+    if not transcript_path:
+        return False
+    try:
+        size = os.path.getsize(transcript_path)
+    except OSError:
+        return False
+    if u.get("path") != transcript_path or size < u.get("off", 0):   # new or rewritten transcript
+        st["usage"] = u = {"path": transcript_path, "off": 0, "in": 0, "out": 0, "cr": 0, "cw": 0,
+                           "ctx": 0, "model": "", "days": {}, "last_id": "", "last": [0, 0, 0, 0], "last_day": ""}
+    if size == u["off"]:
+        return False
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(u["off"])
+            chunk = f.read(max_bytes)
+    except OSError:
+        return False
+    end = chunk.rfind(b"\n")
+    if end < 0:
+        return False   # a line still being written
+    chunk = chunk[:end + 1]
+    u["off"] += len(chunk)
+    changed = False
+    for raw in chunk.splitlines():
+        if b'"usage"' not in raw:
+            continue
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        if e.get("type") != "assistant" or e.get("isSidechain"):
+            continue
+        msg = e.get("message") or {}
+        us = msg.get("usage") or {}
+        vals = [int(us.get("input_tokens") or 0), int(us.get("output_tokens") or 0),
+                int(us.get("cache_read_input_tokens") or 0), int(us.get("cache_creation_input_tokens") or 0)]
+        mid = msg.get("id") or ""
+        day = _local_day(e.get("timestamp", ""))
+        if mid and mid == u["last_id"]:   # one API message is written as several lines: replace, don't add
+            prev = u["last"]
+            for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
+                u[k] -= prev[i]
+            pday = u.get("last_day") or day
+            u["days"][pday] = u["days"].get(pday, 0) - (prev[0] + prev[1] + prev[3])
+        for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
+            u[k] += vals[i]
+        u["days"][day] = u["days"].get(day, 0) + vals[0] + vals[1] + vals[3]
+        u["last_id"], u["last"], u["last_day"] = mid, vals, day
+        u["ctx"] = vals[0] + vals[2] + vals[3]
+        if msg.get("model") and not msg["model"].startswith("<"):
+            u["model"] = _short_model(msg["model"])
+        changed = True
+    if len(u["days"]) > 3:
+        for d in sorted(u["days"])[:-3]:
+            del u["days"][d]
+    return changed
+
+
+def usage_payload(st):
+    u = st["usage"]
+    today = time.strftime("%Y-%m-%d")
+    return {"in": u.get("in", 0), "out": u.get("out", 0), "cr": u.get("cr", 0), "cw": u.get("cw", 0),
+            "ctx": u.get("ctx", 0), "model": u.get("model", ""), "day": today,
+            "today": max(0, u.get("days", {}).get(today, 0))}
+
+
+def session_extras(ev, force_usage=False):
+    """Fields to piggyback on an /event call: 'todo' when the list changed, 'usage' every so often."""
+    session = ev.get("session_id", "")
+    if not session:
+        return {}
+    name = ev.get("hook_event_name", "")
+    st = load_sess(session)
+    extra, dirty = {}, False
+    if name == "SessionStart" and ev.get("source") in ("startup", "clear"):
+        st["tasks"], st["order"], dirty = {}, [], True
+        extra["todo"] = todo_payload(st)
+    if name == "PostToolUse" and track_tasks(st, ev.get("tool_name", ""), ev.get("tool_input"), ev.get("tool_response")):
+        extra["todo"], dirty = todo_payload(st), True
+    if name in ("Stop", "SessionStart") and st["order"]:
+        extra["todo"] = todo_payload(st)   # cheap resync after a Stick reboot
+    if force_usage or time.time() - st.get("usage_sent", 0) >= USAGE_EVERY_S:
+        if read_usage(st, ev.get("transcript_path")) or force_usage:
+            extra["usage"] = usage_payload(st)
+            st["usage_sent"] = time.time()
+        dirty = True
+    if dirty:
+        save_sess(session, st)
+    return extra
+
+
 # --- remote-mode bookkeeping: remember which mode Claude was last told about, per session
 
 def _mode_path(session):
@@ -826,8 +1039,11 @@ def on_permission(dev, ev, cfg):
             decision["updatedPermissions"] = perms
         emit({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}})
     elif state == "deny":
+        msg = "Denied by the user from their ClaudeStick."
+        if res.get("reason"):
+            msg = f"The user denied this from their ClaudeStick and said: {res['reason']}"
         emit({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-                                     "decision": {"behavior": "deny", "message": "Denied by the user from their ClaudeStick."}}})
+                                     "decision": {"behavior": "deny", "message": msg}}})
     # "skip": user chose to answer at the keyboard -> no output
 
 
@@ -836,7 +1052,8 @@ def on_stop(dev, ev, cfg):
     full = last_assistant_text(ev.get("transcript_path"))
     text, opts = split_options(full)
     last = clip(text, 240)
-    r = dev.call("POST", "/event", {**body, "event": "done", "detail": last, "can_inject": True})
+    r = dev.call("POST", "/event", {**body, **session_extras(ev, force_usage=True), "event": "done", "detail": last,
+                                    "can_inject": True})
     if r is None:
         return
     remote = bool(r.get("remote"))
@@ -898,7 +1115,8 @@ def on_event(dev, ev, cfg):
     name = ev.get("hook_event_name", "")
     body = base_body(ev)
     if name == "SessionStart":
-        r = dev.call("POST", "/event", {**body, "event": "ready", "detail": ev.get("source", "")})
+        r = dev.call("POST", "/event", {**body, **session_extras(ev, force_usage=True), "event": "ready",
+                                        "detail": ev.get("source", "")})
         if r is not None:
             set_told(body["session"], False)  # fresh context: Claude knows nothing yet
             note = mode_note(body["session"], bool(r.get("remote")), cfg)
@@ -924,7 +1142,7 @@ def on_event(dev, ev, cfg):
         tool = ev.get("tool_name", "")
         resp = ev.get("tool_response")
         failed = isinstance(resp, dict) and (resp.get("is_error") or resp.get("error"))
-        r = dev.call("POST", "/event", {**body, "event": "error" if failed else "working",
+        r = dev.call("POST", "/event", {**body, **session_extras(ev), "event": "error" if failed else "working",
                                         "detail": f"{tool} {'failed' if failed else 'done'}",
                                         "can_inject": True}, timeout=0.8)
         parts = []
@@ -942,6 +1160,7 @@ def on_event(dev, ev, cfg):
             notify(cfg, f"Claude needs you ({body['project']})", ev.get("message", ""))
     elif name == "SessionEnd":
         dev.call("POST", "/event", {**body, "event": "end"})
+        prune_sessions()
 
 
 # Events where a short extra delay is acceptable: re-read settings, and look for the

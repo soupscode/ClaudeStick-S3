@@ -1,0 +1,5 @@
+firmware/.pio/
+firmware/src/secrets.h
+__pycache__/
+web/firmware/*.bin
+web/ota.json

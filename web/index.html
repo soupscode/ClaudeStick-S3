@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClaudeStick: flash &amp; set up</title>
+<script type="module" src="vendor/esp-web-tools/install-button.js"></script>
+<style>
+  :root { --bg:#0d0d0d; --fg:#ddd; --dim:#888; --line:#2c2c2c; --accent:#d97757; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 18px 60px; }
+  .pane { border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin:18px 0; position:relative; }
+  .pane > .tab { position:absolute; top:-10px; left:14px; background:var(--bg); padding:0 6px; color:var(--accent); }
+  header { display:flex; gap:22px; align-items:center; }
+  header img { image-rendering: pixelated; width:172px; height:148px; flex:none; }
+  h1 { margin:0; font-size:24px; color:var(--accent); }
+  h1 span { color:var(--fg); }
+  p { margin:8px 0; }
+  .dim { color:var(--dim); }
+  ol { padding-left: 20px; } li { margin: 8px 0; }
+  code, kbd { background:#1a1a1a; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  esp-web-install-button button[slot=activate], .btn { font:inherit; background:var(--accent); color:#000; border:0; border-radius:6px; padding:12px 20px; cursor:pointer; font-size:16px; }
+  .warn { color:#f6a84a; }
+  #unsupported { display:none; }
+  esp-web-install-button[unsupported] ~ #unsupported, esp-web-install-button[install-unsupported] ~ #unsupported { display:block; }
+  a { color: var(--accent); }
+  .steps { display:grid; grid-template-columns: 28px 1fr; gap:6px 10px; }
+  .n { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="buddy.gif" alt="animated ASCII capybara buddy">
+    <div>
+      <h1>&gt; claude<span>stick</span></h1>
+      <p class="dim">Approvals, status and one-button macros for Claude, on an M5Stack StickS3.</p>
+      <p class="dim" id="ver"></p>
+    </div>
+  </header>
+
+  <section class="pane"><span class="tab">1. flash</span>
+    <div class="steps">
+      <span class="n">a</span><span>Plug the StickS3 into this computer with a <b>data</b> USB-C cable.</span>
+      <span class="n">b</span><span>Click <b>Install</b>, pick the Stick's serial port, and let it flash (~1 min).</span>
+      <span class="n">c</span><span>When it asks, <b>Connect to Wi-Fi</b> and enter your home network (2.4&nbsp;GHz).</span>
+      <span class="n">d</span><span>Click <b>Visit device</b>. Your Stick's own setup page opens, where you name it, pick a buddy, and get the install command.</span>
+    </div>
+    <p style="margin-top:16px">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Install ClaudeStick</button>
+        <span slot="unsupported" class="warn">Your browser can't talk to USB devices. Use desktop Chrome or Edge.</span>
+        <span slot="not-allowed" class="warn">This page must be opened over https:// or from localhost.</span>
+      </esp-web-install-button>
+    </p>
+    <p class="dim">Already flashed? The same button updates the firmware and keeps your settings (skip the erase prompt).</p>
+  </section>
+
+  <section class="pane"><span class="tab">no computer handy?</span>
+    <p>A fresh Stick with no Wi-Fi opens a hotspot named <code>ClaudeStick-XXXX</code>. Join it from your phone and the setup page pops up (or open <code>192.168.4.1</code>). Enter your Wi-Fi there and finish setup.</p>
+  </section>
+
+  <section class="pane"><span class="tab">troubleshooting</span>
+    <ul>
+      <li><b>No serial port in the list:</b> try another cable (many are charge-only). On Windows, check that Device Manager shows a "USB JTAG/serial" device.</li>
+      <li><b>Flashing fails or the Stick is unresponsive:</b> put it in download mode. With USB plugged in, hold the side button until the internal green LED blinks, then click Install again. The bootloader is in ROM, so this always works.</li>
+      <li><b>Start over:</b> hold <kbd>A</kbd>+<kbd>B</kbd> while powering on to forget Wi-Fi and reopen setup.</li>
+      <li><b>Back to stock:</b> M5Burner &rarr; StickS3 &rarr; factory firmware.</li>
+    </ul>
+  </section>
+</main>
+<script>
+  fetch("manifest.json").then(r => r.json()).then(m => {
+    document.getElementById("ver").textContent = "firmware " + m.version;
+  }).catch(() => {});
+</script>
+</body>
+</html>

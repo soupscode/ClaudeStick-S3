@@ -1,0 +1,11 @@
+{
+  "name": "ClaudeStick",
+  "version": "0.4.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [{ "path": "firmware/claudestick.bin", "offset": 0 }]
+    }
+  ]
+}

@@ -20,6 +20,7 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <label>buddy <span class=d>(watch the Stick, it previews live)</span></label><select id=buddy onchange=preview()></select>
 <label>sound volume</label><input type=range id=vol min=0 max=255>
 <div class=row><input type=checkbox id=tilt><label for=tilt>tilt to scroll long text</label></div>
+<div class=row><input type=checkbox id=flip><label for=flip>flip screen 180&deg; (if it's upside down)</label></div>
 <label>remote mode</label><select id=remote><option value=auto>auto: follows where you last answered (recommended)</option><option value=on>always on</option><option value=off>always off</option></select>
 <button onclick=save()>save</button><span id=smsg class=d></span></div>
 
@@ -69,14 +70,14 @@ $('hello').textContent=(I.done?'settings':'first-time setup')+' · fw '+I.fw;
 $('wifi').classList.toggle('hide',I.wifi.connected&&!I.ap);$('wform').classList.toggle('hide',I.wifi.connected);
 if(I.wifi.connected){$('wmsg').innerHTML='<span class=ok>connected to '+I.wifi.ssid+' as '+I.wifi.ip+'</span>'+(I.ap?'<br>switch your phone back to your home Wi-Fi, then open <b>http://'+I.wifi.ip+':'+I.port+'/setup</b> to finish.':'')}
 $('me').classList.toggle('hide',!I.wifi.connected&&!I.done);
-$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('remote').value=I.remote;
+$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('remote').value=I.remote;
 $('buddy').innerHTML=I.buddies.map((b,i)=>`<option value=${i}>${b}</option>`).join('');$('buddy').value=I.buddy;
 if(I.done){T=T||I.token;show(I);loadConf()}if(I.ap&&!I.wifi.connected)scan()}
 async function scan(){$('ssid').innerHTML='<option>scanning…</option>';try{const n=await api('/setup/scan');$('ssid').innerHTML=n.map(x=>`<option>${x.ssid.replace(/</g,'&lt;')}</option>`).join('')}catch(e){$('ssid').innerHTML=''}}
 async function joinWifi(){const s=$('ssid2').value||$('ssid').value;$('wmsg').textContent='connecting to '+s+'…';await api('/setup/wifi',{ssid:s,pass:$('pw').value});
 for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,1000));try{I=await api('/setup/info');if(I.wifi.connected)return load()}catch(e){}}$('wmsg').innerHTML='<span class=bad>could not connect. check the password (2.4 GHz only).</span>'}
 function preview(){api('/setup/preview',{buddy:+$('buddy').value})}
-async function save(){const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,remote:$('remote').value});
+async function save(){const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,remote:$('remote').value});
 $('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to apply the new name':'')+'</span>';T=r.token;show(r);loadConf()}
 function show(r){const h=r.ip||I.wifi.ip,p=r.port||I.port,t=r.token||T;$('done').classList.remove('hide');
 $('cmd').textContent=`curl -s http://${h}:${p}/install.py | python3 - --host ${h} --port ${p} --token ${t}`;

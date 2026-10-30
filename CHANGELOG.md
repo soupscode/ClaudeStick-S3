@@ -2,6 +2,12 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.6.1
+- Hardware test screen (menu)
+- Flip screen option (menu, settings, serial)
+- Safe mode: Bluetooth off if a fresh flash keeps crashing (or hold B at power-on)
+- Shows why the Stick last restarted
+
 ## 0.6.0
 - Update prompt on the Stick, with changelog
 - Auto rollback if an update won't boot

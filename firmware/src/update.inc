@@ -142,7 +142,10 @@ static void bootGuard() {
     prefs.putString("skipver", FW_VERSION);     // don't offer the broken build again
     ESP.restart();
   }
-  prefs.putInt("bootfail", 0);                  // nothing to roll back to; keep going
+  // Nothing to roll back to (e.g. right after a USB flash): start without Bluetooth,
+  // the most memory-hungry part, so the Stick stays usable and reachable.
+  safeMode = true;
+  prefs.putInt("bootfail", 0);
 }
 
 static void bootHealthTick() {

@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.6.0";
+static const char*    FW_VERSION   = "0.6.1";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -124,6 +124,9 @@ static bool        setupDone = false, apOn = false;
 static uint8_t     volume = 120;
 static uint32_t    restartAt = 0, doneAt = 0;
 static String      apName, devId;
+static bool        flipped = false;    // screen rotated 180 degrees
+static bool        safeMode = false;   // Bluetooth off (hold B at power-on, or automatic after a crash loop)
+static String      resetWhy;
 
 // Settings shared with every machine's hook (GET/POST /config). Stored on the Stick
 // so macros and waits are edited once, from the settings page.
@@ -139,7 +142,7 @@ struct Settings {
 static uint32_t lastStickAt = 0, lastKbdAt = 0;   // auto remote mode inputs
 static int32_t     tzOffset = 0;
 
-enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP };
+enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST };
 static Screen   screen = SCR_HOME;
 static int      menuIdx = 0, focusSession = -1;
 static uint32_t lastActivity = 0, lastBeep = 0, lastDraw = 0;
@@ -372,7 +375,7 @@ static void handleBleLine(const String& line) {
     } else if (cmd == "owner") {
       ownerName = doc["name"] | ""; bleAck("owner");
     } else if (cmd == "unpair") {
-      bleClearBonds(); bleAck("unpair");
+      if (!safeMode) bleClearBonds(); bleAck("unpair");
     }
     // char_begin and other folder-push commands are deliberately not acked:
     // the desktop times out and reports that this device doesn't take files.
@@ -747,6 +750,8 @@ static void hHealth() {
   out["ok"] = true; out["fw"] = FW_VERSION; out["name"] = devName;
   out["id"] = devId; out["host"] = mdnsHost + ".local";
   out["hook"] = EMBED_HOOK_SHA;
+  out["reset"] = resetWhy; out["safe_mode"] = safeMode;
+  out["heap"] = ESP.getFreeHeap(); out["psram"] = ESP.getFreePsram();
   out["auth"] = token.length() > 0;
   sendJson(out);
 }
@@ -970,7 +975,8 @@ static void textCommand(String line) {
     Serial.printf("ClaudeStick %s\nname=%s host=%s.local ip=%s port=%u\ntoken=%s\nwifi=%s (%s)\nble=%s setup=%s\n",
       FW_VERSION, devName.c_str(), mdnsHost.c_str(), WiFi.localIP().toString().c_str(), HTTP_PORT,
       token.c_str(), ssid.c_str(), WiFi.status() == WL_CONNECTED ? "connected" : "down",
-      bleConnected() ? "connected" : "idle", setupDone ? "done" : "pending");
+      safeMode ? "off (safe mode)" : bleConnected() ? "connected" : "idle", setupDone ? "done" : "pending");
+    Serial.printf("last reset: %s  heap %u  psram %u\n", resetWhy.c_str(), ESP.getFreeHeap(), ESP.getFreePsram());
   } else if (line.startsWith("tilt ")) {
     String m = line.substring(5);
     if (m == "off") tiltMode = 0;
@@ -978,16 +984,19 @@ static void textCommand(String line) {
     else tiltMode = 1;
     prefs.putChar("tilt", tiltMode);
     Serial.printf("ok tilt=%d\n", tiltMode);
+  } else if (line == "flip") {
+    flipped = !flipped; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1);
+    Serial.printf("ok flip=%d\n", flipped);
   } else if (line == "setup") {
     setupDone = false; prefs.putBool("setup", false);
     Serial.println("ok, first-time setup re-opened");
   } else if (line == "reboot") {
     ESP.restart();
   } else if (line == "forget") {
-    prefs.remove("ssid"); prefs.remove("pass"); prefs.putBool("setup", false); bleClearBonds();
+    prefs.remove("ssid"); prefs.remove("pass"); prefs.putBool("setup", false); if (!safeMode) bleClearBonds();
     Serial.println("ok forgotten, rebooting"); delay(200); ESP.restart();
   } else {
-    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | info | setup | reboot | forget");
+    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | info | setup | reboot | forget");
   }
   dirty = true;
 }
@@ -1094,7 +1103,7 @@ static void hSetupInfo() {
   JsonObject w = out["wifi"].to<JsonObject>();
   w["ssid"] = ssid; w["connected"] = WiFi.status() == WL_CONNECTED; w["ip"] = WiFi.localIP().toString();
   out["name"] = devName; out["bt"] = devName; out["buddy"] = buddySpeciesIdx();
-  out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote);
+  out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
   JsonArray b = out["buddies"].to<JsonArray>();
   uint8_t cur = buddySpeciesIdx();
   for (uint8_t i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); b.add(buddySpeciesName()); }
@@ -1150,6 +1159,7 @@ static void hSetupSave() {
   buddySetSpeciesIdx(in["buddy"] | (int)buddySpeciesIdx()); prefs.putUChar("buddy", buddySpeciesIdx());
   volume = in["volume"] | (int)volume; prefs.putUChar("vol", volume); M5.Speaker.setVolume(volume);
   tiltMode = (in["tilt"] | true) ? 1 : 0; prefs.putChar("tilt", tiltMode);
+  if (in["flip"].is<bool>()) { flipped = in["flip"]; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); }
   if (in["remote"].is<const char*>()) { String rm = in["remote"].as<const char*>(); conf.remote = rm == "off" ? 0 : rm == "on" ? 1 : 2; }
   else if (in["remote"].is<bool>()) conf.remote = in["remote"].as<bool>() ? 1 : 2;
   saveConfig(); updateRemote();
@@ -1354,7 +1364,10 @@ static uint8_t buddyState(const char** mood, uint16_t* moodColor) {
   return B_IDLE;
 }
 
-static String titleBase() { return remoteMode ? "claudestick:remote" : "claudestick"; }
+static String titleBase() {
+  if (safeMode) return "claudestick:safe";
+  return remoteMode ? "claudestick:remote" : "claudestick";
+}
 
 // ---- screens
 
@@ -1398,7 +1411,7 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_UPDATE, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
@@ -1410,6 +1423,8 @@ static int menuEntries(MenuEntry* e, String* labels) {
   add(MI_TIE, 0, pinned.length() ? "tie to session (tied)" : "tie to session");
   add(MI_BUDDY, 0, String("buddy: ") + buddySpeciesName());
   add(MI_UPDATE, 0, upd.available ? "update to v" + upd.version : String("check for updates"));
+  add(MI_FLIP, 0, "flip screen");
+  add(MI_TEST, 0, "hardware test");
   add(MI_HELP, 0, "button help");
   add(MI_INFO, 0, "info");
   add(MI_TOKEN, 0, "new token (hold A)");
@@ -1442,6 +1457,29 @@ static void drawHelp() {
   line("hold B: menu", C_FG);
   line("tilt: scroll long text", C_DIM);
   line("A+B at power-on: reset", C_DIM);
+}
+
+// Hardware test: live readings to check a new Stick in a minute.
+static void drawTest() {
+  frame("hardware test", C_BLUE, "A beep  hold B back");
+  int y = TOP + 2;
+  auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
+  bool a = M5.BtnA.isPressed(), b = M5.BtnB.isPressed(), p = M5.BtnPWR.isPressed();
+  txt("A", PANE_X, y, a ? C_BG : C_FG, a ? C_OK : C_BG);
+  txt("B", PANE_X + 18, y, b ? C_BG : C_FG, b ? C_OK : C_BG);
+  txt("PWR", PANE_X + 36, y, p ? C_BG : C_FG, p ? C_OK : C_BG);
+  txt("<- press", PANE_X + 64, y, C_DIM); y += LINE_H + 2;
+  float ax = 0, ay = 0, az = 0;
+  bool imu = M5.Imu.getAccel(&ax, &ay, &az);
+  line(imu ? "accel " + String(ax, 2) + " " + String(ay, 2) + " " + String(az, 2) : String("imu: no data"), imu ? C_FG : C_BAD);
+  line("batt " + String(M5.Power.getBatteryLevel()) + "% " + String(M5.Power.getBatteryVoltage()) + "mV" +
+       ((int)M5.Power.isCharging() == 1 ? " chg" : ""), C_FG);
+  line(WiFi.status() == WL_CONNECTED ? "wifi " + String(WiFi.RSSI()) + " dBm" : String("wifi down"),
+       WiFi.status() == WL_CONNECTED ? C_OK : C_BAD);
+  line(String("bt ") + (safeMode ? "off (safe mode)" : bleConnected() ? "connected" : "advertising"), safeMode ? C_YEL : C_FG);
+  line("heap " + String(ESP.getFreeHeap() / 1024) + "K psram " + String(ESP.getFreePsram() / 1024) + "K", C_FG);
+  line("last reset: " + resetWhy, C_DIM);
+  line("fw " + String(FW_VERSION) + (flipped ? " (flipped)" : ""), C_DIM);
 }
 
 // Update prompt + progress + one-off notices
@@ -1544,6 +1582,7 @@ static void drawInfo() {
   line(token, C_CLAUDE);
   line("ok " + String(stats.appr) + "  no " + String(stats.deny), C_FG);
   line(String("tilt ") + (tiltMode == 0 ? "off" : tiltMode > 0 ? "on" : "flipped") + "  voice " + (conf.sttUrl.length() ? "on" : "off"), C_DIM);
+  line("reset: " + resetWhy + (safeMode ? "  SAFE MODE" : ""), safeMode ? C_YEL : C_DIM);
   if (desk.lastBeat) line("desk tok " + String(desk.tokensToday), C_DIM);
 }
 
@@ -1646,6 +1685,7 @@ static void draw() {
   else if (screen == SCR_SESSIONS) drawSessions();
   else if (screen == SCR_INFO) drawInfo();
   else if (screen == SCR_HELP) drawHelp();
+  else if (screen == SCR_TEST) drawTest();
   else drawHome();
   buddyPane(bs, mood, moodColor);
   spr.pushSprite(0, 0);
@@ -1663,7 +1703,7 @@ static void tiltTick() {
   float ax, ay, az;
   if (!M5.Imu.getAccel(&ax, &ay, &az)) return;
   if (scrollKey != lastKey) { lastKey = scrollKey; base = ax; return; }
-  float d = (ax - base) * tiltMode;
+  float d = (ax - base) * tiltMode * (flipped ? -1 : 1);
   if (d > 0.3f) { scrollLine++; dirty = true; touch(); }
   else if (d < -0.3f && scrollLine > 0) { scrollLine--; dirty = true; touch(); }
 }
@@ -1681,6 +1721,12 @@ static void buttons() {
 
   if (dimmed) { touch(); return; }      // first press only wakes the screen
   touch();
+  if (screen == SCR_TEST) {             // buttons light up on screen; only these do anything
+    if (bHold) screen = SCR_HOME;
+    else if (aClick) beep(1);
+    else if (pClick) beep(2);
+    return;
+  }
   if (setupDone) noteStick();           // answering on the Stick = you're remote (auto mode)
 
   if (Approval* a = topApproval()) {
@@ -1748,6 +1794,8 @@ static void buttons() {
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
       case MI_BUDDY:  prefs.putUChar("buddy", buddyNextSpecies()); break;            // stay in menu
       case MI_HELP:   screen = SCR_HELP; menuIdx = 0; break;
+      case MI_FLIP:   flipped = !flipped; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); break;
+      case MI_TEST:   screen = SCR_TEST; menuIdx = 0; break;
       case MI_UPDATE: screen = SCR_HOME; menuIdx = 0;
                       if (upd.available) upd.remindAt = 0; else { notice("updates", "checking...", C_DIM, 15000); draw(); checkForUpdate(true); }
                       break;
@@ -1809,6 +1857,21 @@ void setup() {
 
   prefs.begin("cstick", false);
   bootGuard();                       // may switch back to the previous firmware and restart
+  flipped = prefs.getBool("flip", false);
+  M5.Display.setRotation(flipped ? 3 : 1);
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  resetWhy = "power on"; break;
+    case ESP_RST_SW:       resetWhy = "restart"; break;
+    case ESP_RST_PANIC:    resetWhy = "CRASH (panic)"; break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      resetWhy = "CRASH (watchdog)"; break;
+    case ESP_RST_BROWNOUT: resetWhy = "brownout (low power)"; break;
+    case ESP_RST_DEEPSLEEP: resetWhy = "wake"; break;
+    default:               resetWhy = "other"; break;
+  }
+  M5.update();
+  if (M5.BtnB.isPressed() && !M5.BtnA.isPressed()) safeMode = true;   // hold B at power-on
   ssid  = prefs.getString("ssid", CS_WIFI_SSID);
   pass  = prefs.getString("pass", CS_WIFI_PASS);
   token = prefs.getString("token", CS_TOKEN);
@@ -1846,7 +1909,7 @@ void setup() {
   if (ssid.length()) WiFi.begin(ssid.c_str(), pass.c_str());
   else if (!setupDone) startAP();
 
-  bleInit(devName.c_str());
+  if (!safeMode) bleInit(devName.c_str());
   startHttp();
   bootNotices();
   lastActivity = millis();

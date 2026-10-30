@@ -66,6 +66,24 @@ Every terminal with the hooks installed shows up on Home, named `folder@branch` 
 - **A** on Home moves the focus (underlined). The menu's Stop and macros, and the phone's default target, all go to the focused session.
 - **Menu → tie to session** pins one session (`*`). The Stick then only answers that session: approvals, questions and Done menus from other sessions fall straight through to their own terminals. Choose *all sessions* to unpin. The phone page has the same Pin/Unpin buttons.
 
+## First flash checklist
+
+1. Open the flasher in **desktop Chrome or Edge** and plug the Stick in with a **data** USB-C cable.
+2. **Install**, then accept *erase* on the first install, then **Connect to Wi-Fi**, then **Visit device**.
+   - **No serial port listed:** try another cable.
+   - **Flashing fails:** hold the side button until the green LED blinks (download mode), then retry.
+3. Finish setup on the page that opens. Then **menu → hardware test**:
+   - A, B and PWR light up when pressed (if PWR doesn't, use B/A for lists; nothing else depends on it)
+   - accel numbers move when you tilt it
+   - A beeps
+   - battery and Wi-Fi look sane
+   - "last reset: power on"
+4. **Upside down?** Use menu → *flip screen*. If tilt scrolls the wrong way, run `tilt flip` in *Logs & Console*.
+5. **Title says `claudestick:safe`?** Bluetooth was turned off because the Stick crashed on boot. Open *Logs & Console* from the flasher page (no tools needed) and send me what it prints, plus the "last reset" line from the hardware test.
+6. Run the install command on your machines, then trigger a Claude Code approval to test it end to end.
+
+*Logs & Console* in the flasher dialog doubles as the serial terminal: `info`, `flip`, `tilt flip`, `wifi <ssid> <pass>`.
+
 ## Setup
 
 ### 1. Get the web flasher online (once)

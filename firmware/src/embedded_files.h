@@ -39,6 +39,9 @@ MARK = "claudestick_hook.py"
 QUICK = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "SessionEnd"]
 
 
+TODO_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+
 def load_json(path, default):
     try:
         with open(path) as f:
@@ -120,7 +123,7 @@ def install(args):
     # Local config only holds how to reach the Stick; macros, waits and alerts live on
     # the Stick (settings page) and are fetched by the hook.
     cfg = load_json(CONFIG, None) or {}
-    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host")}
+    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env")}
     cfg.setdefault("port", 7880)
     for k in ("host", "token", "port"):
         v = getattr(args, k)
@@ -143,6 +146,21 @@ def install(args):
     add("PermissionRequest", long_wait)
     add("Stop", long_wait)
 
+    # Newer Claude models don't load the to-do tools unless asked; the Stick's
+    # to-do view needs them. Only set it if you haven't chosen either way.
+    env = settings.setdefault("env", {})
+    if args.no_todo_tools:
+        if cfg.get("added_todo_env"):
+            env.pop(TODO_ENV, None)
+            cfg.pop("added_todo_env", None)
+    elif TODO_ENV not in env:
+        env[TODO_ENV] = "1"
+        cfg["added_todo_env"] = True
+        print(f"env     -> {TODO_ENV}=1 (to-do list on the Stick; --no-todo-tools to skip)")
+    if not env:
+        settings.pop("env", None)
+    save_json(CONFIG, cfg)
+
     backup_settings()
     save_json(SETTINGS, settings)
     print(f"hooks   -> {SETTINGS}")
@@ -152,7 +170,12 @@ def install(args):
 def uninstall(_args):
     if os.path.exists(SETTINGS):
         backup_settings()
-        save_json(SETTINGS, strip_ours(load_json(SETTINGS, {})))
+        settings = strip_ours(load_json(SETTINGS, {}))
+        if (load_json(CONFIG, {}) or {}).get("added_todo_env"):
+            settings.get("env", {}).pop(TODO_ENV, None)
+            if not settings.get("env"):
+                settings.pop("env", None)
+        save_json(SETTINGS, settings)
         print("removed ClaudeStick hooks from Claude Code settings")
     print(f"left {HOME_DIR} in place (delete it to remove your config/macros)")
 
@@ -181,13 +204,15 @@ def test(_args=None):
             save_json(CONFIG, local)
     ok = dev.call("POST", "/event", {"session": "install-test", "project": "install-test",
                                      "event": "ready", "detail": "hello from install.py"})
-    print("token OK" if ok is not None else "token REJECTED - copy it from the device (hold A on home screen)")
+    print("token OK" if ok is not None else "token REJECTED - copy it from the device (menu > info)")
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="device IP or hostname (default claudestick.local)")
-    p.add_argument("--token", help="token shown on the device (hold A on the home screen)")
+    p.add_argument("--token", help="token shown on the device (menu > info)")
+    p.add_argument("--no-todo-tools", action="store_true",
+                   help=f"don't set {TODO_ENV}=1 (the Stick's to-do view stays empty on newer models)")
     p.add_argument("--port", type=int)
     p.add_argument("--uninstall", action="store_true")
     p.add_argument("--test", action="store_true")
@@ -204,7 +229,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
-#define EMBED_HOOK_SHA "14c7dbb502fdc7137c874cce286e1ea65434a3d7c5533c610a838ef4a740388e"
+#define EMBED_HOOK_SHA "7e4668452e64c05b0323b10f1e1bed422b576a42ce9e2859231604943d569dc0"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -873,10 +898,10 @@ def read_usage(st, transcript_path, max_bytes=8_000_000):
             for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
                 u[k] -= prev[i]
             pday = u.get("last_day") or day
-            u["days"][pday] = u["days"].get(pday, 0) - (prev[0] + prev[1] + prev[3])
+            u["days"][pday] = u["days"].get(pday, 0) - sum(prev)
         for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
             u[k] += vals[i]
-        u["days"][day] = u["days"].get(day, 0) + vals[0] + vals[1] + vals[3]
+        u["days"][day] = u["days"].get(day, 0) + sum(vals)
         u["last_id"], u["last"], u["last_day"] = mid, vals, day
         u["ctx"] = vals[0] + vals[2] + vals[3]
         if msg.get("model") and not msg["model"].startswith("<"):
@@ -907,8 +932,13 @@ def session_extras(ev, force_usage=False):
     if name == "SessionStart" and ev.get("source") in ("startup", "clear"):
         st["tasks"], st["order"], dirty = {}, [], True
         extra["todo"] = todo_payload(st)
-    if name == "PostToolUse" and track_tasks(st, ev.get("tool_name", ""), ev.get("tool_input"), ev.get("tool_response")):
-        extra["todo"], dirty = todo_payload(st), True
+    if name == "PostToolUse":
+        before = todo_payload(st)
+        if track_tasks(st, ev.get("tool_name", ""), ev.get("tool_input"), ev.get("tool_response")):
+            extra["todo"], dirty = todo_payload(st), True
+            t = extra["todo"]
+            if t["total"] and t["done"] == t["total"] and before["done"] != before["total"]:
+                extra["plan_done"] = True   # last item just ticked off
     if name in ("Stop", "SessionStart") and st["order"]:
         extra["todo"] = todo_payload(st)   # cheap resync after a Stick reboot
     if force_usage or time.time() - st.get("usage_sent", 0) >= USAGE_EVERY_S:
@@ -1142,10 +1172,13 @@ def on_event(dev, ev, cfg):
         tool = ev.get("tool_name", "")
         resp = ev.get("tool_response")
         failed = isinstance(resp, dict) and (resp.get("is_error") or resp.get("error"))
-        r = dev.call("POST", "/event", {**body, **session_extras(ev), "event": "error" if failed else "working",
+        extras = session_extras(ev)
+        r = dev.call("POST", "/event", {**body, **extras, "event": "error" if failed else "working",
                                         "detail": f"{tool} {'failed' if failed else 'done'}",
                                         "can_inject": True}, timeout=0.8)
         parts = []
+        if extras.get("plan_done") and r and r.get("remote"):
+            notify(cfg, f"Plan done ({body['project']})", f"All {extras['todo']['total']} to-dos are complete.")
         if r is not None:
             note = mode_note(body["session"], bool(r.get("remote")), cfg)
             if note:

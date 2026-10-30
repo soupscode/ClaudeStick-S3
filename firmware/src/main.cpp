@@ -528,6 +528,9 @@ static uint32_t tokensToday() {
 
 // Optional to-do list / token usage riding along on any /event.
 static void noteExtras(JsonDocument& in, Session* s) {
+  if (in["plan_done"] | false) {   // Claude ticked off its last to-do
+    beep(2); heartUntil = millis() + 3000; touch();
+  }
   if (in["todo"].is<JsonObject>()) {
     JsonObject t = in["todo"];
     s->todoTotal = t["total"] | 0; s->todoDone = t["done"] | 0; s->todoSkip = t["skip"] | 0;
@@ -704,7 +707,7 @@ async function act(b){await api('/act',b);load()}
 function dn(id){const t=prompt('Tell Claude why not (it gets this message):');if(t!==null)act({action:'deny',id,text:t})}
 const K=n=>n<1e4?String(n):n<1e6?(n/1e3).toFixed(n<1e5?1:0)+'k':(n/1e6).toFixed(2)+'M';
 const todo=t=>!t?'':`<div class=bar><i style="width:${100*t.done/Math.max(1,t.total)}%"></i></div><details${t.now?' open':''}><summary>${t.done}/${t.total} ${e(t.now||'')}</summary>${t.items.map(i=>`<div class="td ${i[0]}">${i[0]=='c'?'&#10003;':i[0]=='i'?'&#9656;':'&middot;'} ${e(i[1])}</div>`).join('')}</details>`;
-const use=u=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache read ${K(u.cr)}) &middot; context ${K(u.ctx)}${u.model?' &middot; '+e(u.model):''}</div>`;
+const use=u=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cr+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache ${K(u.cr+u.cw)}) &middot; context ${K(u.ctx)}${u.model?' &middot; '+e(u.model):''}</div>`;
 function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
 async function load(){try{S=await api('/state')}catch(x){return}
 ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';tk.textContent=S.tokens_today?K(S.tokens_today)+' tok today':'';rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
@@ -1485,7 +1488,7 @@ static void drawApproval(Approval* a) {
   int rows = (BOTTOM - (y + 4)) / LINE_H - (a->src == SRC_WIFI ? 1 : 0);
   textBlock(a->detail, y + 4, rows, C_FG, true);
   String foot = millis() < holdHintUntil ? "double-press A to allow" :
-                a->always.length() ? "2x always: " + a->always : a->src == SRC_WIFI ? "hold A: say why not" : "";
+                a->always.length() ? "2x always: " + a->always : a->src == SRC_WIFI ? "hold B: answer at keyboard" : "";
   if (foot.length()) txt(fit(foot, PANE_CHARS), PANE_X, BOTTOM - LINE_H + 2, millis() < holdHintUntil ? C_YEL : C_DIM);
   int pending = 0;
   for (auto& x : approvals) if (x.used && x.decision == D_PENDING) pending++;
@@ -1551,7 +1554,7 @@ static void drawHelp() {
   line("  2x A: always allow", C_FG);
   line("  danger: 2x A to ok", C_BAD);
   line("  hold A: no + say why", C_FG);
-  line("  P: answer at keyboard", C_FG);
+  line("  hold B: at keyboard", C_FG);
   line("lists: B/P move  A pick", C_FG);
   line("home: A details  B: menu", C_FG);
   line("hold A: talk to claude", C_CLAUDE);
@@ -1742,7 +1745,7 @@ static void drawDetail() {
   txt(st, W - 6 - spr.textWidth(st), y, stateColor(st));
   y += LINE_H;
   if (s->hasUsage) {
-    String u = "tok " + fmtTok(s->tokIn + s->tokOut + s->tokCW) + "  ctx " + fmtTok(s->ctx);
+    String u = "tok " + fmtTok(s->tokIn + s->tokOut + s->tokCR + s->tokCW) + "  ctx " + fmtTok(s->ctx);
     txt(fit(u, PANE_CHARS), PANE_X, y, C_DIM); y += LINE_H;
   }
   spr.drawFastHLine(PANE_X, y + 1, PANE_W - 6, C_FRAME);
@@ -1954,7 +1957,7 @@ static void buttons() {
       else notice("voice", "voice replies work with claude code (cli) sessions", C_DIM, 2500);
     }
     else if (bClick) { aFirstAt = 0; decide(a, D_DENY); }
-    else if (pClick && a->src == SRC_WIFI) { aFirstAt = 0; decide(a, D_SKIP); }
+    else if ((bHold || pClick) && a->src == SRC_WIFI) { aFirstAt = 0; decide(a, D_SKIP); }   // answer at the keyboard
     return;
   }
 

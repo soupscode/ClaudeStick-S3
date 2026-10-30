@@ -8,6 +8,8 @@ Each version's bullets are shown on the Stick's "update available!" prompt.
 - Double-press A = always allow (and allows DANGER cards)
 - Hold A on an approval: deny + tell Claude why
 - Phone: to-do list, token use, Deny + note
+- Chime (+ phone push when remote) when the plan is done
+- Hold B on an approval = answer at keyboard
 
 ## 0.6.1
 - Hardware test screen (menu)

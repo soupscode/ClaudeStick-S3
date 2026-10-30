@@ -666,10 +666,10 @@ def read_usage(st, transcript_path, max_bytes=8_000_000):
             for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
                 u[k] -= prev[i]
             pday = u.get("last_day") or day
-            u["days"][pday] = u["days"].get(pday, 0) - (prev[0] + prev[1] + prev[3])
+            u["days"][pday] = u["days"].get(pday, 0) - sum(prev)
         for k, i in (("in", 0), ("out", 1), ("cr", 2), ("cw", 3)):
             u[k] += vals[i]
-        u["days"][day] = u["days"].get(day, 0) + vals[0] + vals[1] + vals[3]
+        u["days"][day] = u["days"].get(day, 0) + sum(vals)
         u["last_id"], u["last"], u["last_day"] = mid, vals, day
         u["ctx"] = vals[0] + vals[2] + vals[3]
         if msg.get("model") and not msg["model"].startswith("<"):
@@ -700,8 +700,13 @@ def session_extras(ev, force_usage=False):
     if name == "SessionStart" and ev.get("source") in ("startup", "clear"):
         st["tasks"], st["order"], dirty = {}, [], True
         extra["todo"] = todo_payload(st)
-    if name == "PostToolUse" and track_tasks(st, ev.get("tool_name", ""), ev.get("tool_input"), ev.get("tool_response")):
-        extra["todo"], dirty = todo_payload(st), True
+    if name == "PostToolUse":
+        before = todo_payload(st)
+        if track_tasks(st, ev.get("tool_name", ""), ev.get("tool_input"), ev.get("tool_response")):
+            extra["todo"], dirty = todo_payload(st), True
+            t = extra["todo"]
+            if t["total"] and t["done"] == t["total"] and before["done"] != before["total"]:
+                extra["plan_done"] = True   # last item just ticked off
     if name in ("Stop", "SessionStart") and st["order"]:
         extra["todo"] = todo_payload(st)   # cheap resync after a Stick reboot
     if force_usage or time.time() - st.get("usage_sent", 0) >= USAGE_EVERY_S:
@@ -935,10 +940,13 @@ def on_event(dev, ev, cfg):
         tool = ev.get("tool_name", "")
         resp = ev.get("tool_response")
         failed = isinstance(resp, dict) and (resp.get("is_error") or resp.get("error"))
-        r = dev.call("POST", "/event", {**body, **session_extras(ev), "event": "error" if failed else "working",
+        extras = session_extras(ev)
+        r = dev.call("POST", "/event", {**body, **extras, "event": "error" if failed else "working",
                                         "detail": f"{tool} {'failed' if failed else 'done'}",
                                         "can_inject": True}, timeout=0.8)
         parts = []
+        if extras.get("plan_done") and r and r.get("remote"):
+            notify(cfg, f"Plan done ({body['project']})", f"All {extras['todo']['total']} to-dos are complete.")
         if r is not None:
             note = mode_note(body["session"], bool(r.get("remote")), cfg)
             if note:

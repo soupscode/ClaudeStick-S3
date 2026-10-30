@@ -32,8 +32,8 @@ On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
 
 | Screen | A | 2x A | hold A | B | hold B | P |
 |---|---|---|---|---|---|---|
-| Approval | allow | **always allow** (writes a permission rule) | **deny + say why** | deny | — | answer at keyboard |
-| Approval, **DANGER** (red) | (nudge) | allow once | deny + say why | deny | — | answer at keyboard |
+| Approval | allow | **always allow** (writes a permission rule) | **deny + say why** | deny | **answer at keyboard** | answer at keyboard |
+| Approval, **DANGER** (red) | (nudge) | allow once | deny + say why | deny | answer at keyboard | answer at keyboard |
 | Question / Done menu | pick | — | **talk** (spoken reply) | next | dismiss | previous |
 | Home | **session details** | — | **talk to Claude** | menu | menu | — |
 | Session details | back | — | talk to this session | next session | back | previous session |
@@ -65,7 +65,8 @@ On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
 Tap A on Home to see the focused session:
 
 - **To-do list:** progress bar, `x` done, `>` current step (orange), `-` pending. Tilt to scroll. Home shows `2/7 <current step>` under each session.
-- **Tokens:** `tok` = input + output + cache writes for the session; `ctx` = how full the context is right now. **Menu → info** and the phone header show today's total across all CLI sessions; the phone also breaks out input, output and cache reads.
+- **Tokens:** `tok` = everything the session used (input, output, cache reads and writes); `ctx` = how full the context is right now. **Menu → info** and the phone header show today's total across all CLI sessions; the phone also breaks out input, output and cache.
+- **Plan done:** when Claude ticks off its last to-do, the Stick chimes and the buddy celebrates; in remote mode you also get a phone push (ntfy).
 
 Claude only keeps a to-do list when its to-do tools are loaded, and newer Claude models don't load them by default. The installer sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in `~/.claude/settings.json` for you unless you already set it either way. Pass `--no-todo-tools` to skip that; uninstall removes it only if the installer added it. Tokens work either way: the hook reads them from the session transcript.
 

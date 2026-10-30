@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.7.0";
+static const char*    FW_VERSION   = "0.7.1";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -363,6 +363,44 @@ static void bleAck(const char* cmd, bool ok = true, int n = 0) {
   bleSend(d);
 }
 
+// The 6x8 font is ASCII only: fold UTF-8 punctuation and Latin letters to plain equivalents
+// (the Wi-Fi hook does the same on its side).
+static String asciiFold(const char* in) {
+  String out;
+  const uint8_t* p = (const uint8_t*)in;
+  bool prevQ = false;
+  while (*p) {
+    uint32_t c = *p++;
+    if (c >= 0xC0 && *p) {   // decode one UTF-8 sequence
+      int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+      c &= (0x3F >> extra);
+      while (extra-- > 0 && (*p & 0xC0) == 0x80) c = (c << 6) | (*p++ & 0x3F);
+    }
+    if (c < 0x80) { if (c == '\t') out += "  "; else if (c != '\r') out += (char)c; prevQ = false; continue; }
+    const char* r = nullptr;
+    switch (c) {
+      case 0x2018: case 0x2019: r = "'"; break;
+      case 0x201C: case 0x201D: r = "\""; break;
+      case 0x2013: case 0x2014: case 0x2212: r = "-"; break;
+      case 0x2026: r = "..."; break;
+      case 0x2022: case 0x00B7: r = "*"; break;
+      case 0x2192: r = "->"; break;
+      case 0x2190: r = "<-"; break;
+      case 0x00D7: r = "x"; break;
+      case 0x00A0: r = " "; break;
+      default: break;
+    }
+    if (!r && c >= 0xC0 && c <= 0xFF) {   // Latin-1 letters -> base letter
+      static const char* L = "AAAAAAACEEEEIIIIDNOOOOO*OUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+      char b = L[c - 0xC0];
+      if (b != '*' && b != '/') { out += b; prevQ = false; continue; }
+    }
+    if (r) { out += r; prevQ = false; }
+    else if (!prevQ) { out += '?'; prevQ = true; }
+  }
+  return out;
+}
+
 static void handleBleLine(const String& line) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;
@@ -408,9 +446,9 @@ static void handleBleLine(const String& line) {
   desk.total    = doc["total"] | 0;
   desk.running  = doc["running"] | 0;
   desk.waiting  = doc["waiting"] | 0;
-  desk.msg      = (const char*)(doc["msg"] | "");
+  desk.msg      = asciiFold(doc["msg"] | "");
   desk.tokensToday = doc["tokens_today"] | 0L;
-  desk.entry    = doc["entries"].is<JsonArray>() ? String((const char*)(doc["entries"][0] | "")) : "";
+  desk.entry    = doc["entries"].is<JsonArray>() ? asciiFold(doc["entries"][0] | "") : String();
   desk.lastBeat = millis();
 
   String pid = doc["prompt"]["id"] | "";
@@ -424,8 +462,8 @@ static void handleBleLine(const String& line) {
     if (!have) {
       if (Approval* a = newApproval()) {
         a->src = SRC_BLE; a->bleId = pid;
-        a->tool = (const char*)(doc["prompt"]["tool"] | "tool");
-        a->detail = (const char*)(doc["prompt"]["hint"] | "");
+        a->tool = asciiFold(doc["prompt"]["tool"] | "tool");
+        a->detail = asciiFold(doc["prompt"]["hint"] | "");
         a->project = "Desktop";
       }
     }
@@ -1297,6 +1335,7 @@ static const uint16_t C_OK     = 0x4E89;   // green
 static const uint16_t C_BAD    = 0xE945;   // red
 static const uint16_t C_BLUE   = 0x5D3F;   // blue
 static const uint16_t C_YEL    = 0xF6A8;   // amber
+static const uint16_t C_BADDIM = 0xA0E3;   // dark red (danger border)
 
 static const int W = 240, H = 135;
 static const int LEFT_W = 86;                 // buddy pane width
@@ -1335,7 +1374,11 @@ static int wrapLines(const String& text, int width, String* out, int maxOut,
       if ((int)para.length() <= width) { seg = para; para = ""; }
       else {
         int cut = para.lastIndexOf(' ', width);
-        if (cut < width / 2) cut = width;
+        if (cut < width / 2) {   // long token: prefer to break after punctuation, else hard cut
+          cut = width;
+          for (int i = width; i > width / 2; i--)
+            if (strchr("/_-=,:;.&|", para[i - 1])) { cut = i; break; }
+        }
         seg = para.substring(0, cut);
         para = para.substring(cut); para.trim();
       }
@@ -1347,20 +1390,89 @@ static int wrapLines(const String& text, int width, String* out, int maxOut,
   return n;
 }
 
-// Frame with a title tab on the top border and key hints on the bottom border.
-static void frame(const String& title, uint16_t accent, const String& hints) {
-  spr.drawRect(0, 4, W, H - 4, C_FRAME);
-  spr.drawFastVLine(LEFT_W, 5, H - 6, C_FRAME);
+// ---- status bar icons: drawn from primitives, so they don't depend on font glyphs
+
+static void iconWifi(int x, int y, bool up, int rssi) {      // 11 x 8
+  int lit = !up ? 0 : rssi > -55 ? 4 : rssi > -65 ? 3 : rssi > -75 ? 2 : 1;
+  for (int i = 0; i < 4; i++) {
+    int h = 2 + i * 2;
+    spr.fillRect(x + i * 3, y + 8 - h, 2, h, i < lit ? (lit == 1 ? C_YEL : C_FG) : C_FRAME);
+  }
+}
+
+static void iconBitmap(int x, int y, const uint8_t* rows, int n, int wBits, uint16_t c) {
+  for (int r = 0; r < n; r++)
+    for (int b = 0; b < wBits; b++)
+      if (rows[r] & (1 << (wBits - 1 - b))) spr.drawPixel(x + b, y + r, c);
+}
+
+static void iconBluetooth(int x, int y, bool connected) {    // 5 x 9
+  static const uint8_t rune[9] = { 0x04, 0x06, 0x15, 0x0E, 0x04, 0x0E, 0x15, 0x06, 0x04 };
+  iconBitmap(x, y, rune, 9, 5, connected ? C_BLUE : C_FRAME);
+}
+
+static void iconBattery(int x, int y, int pct, bool charging) {   // 18 x 8
+  uint16_t c = charging ? C_OK : pct > 30 ? C_FG : pct > 15 ? C_YEL : C_BAD;
+  spr.drawRect(x, y, 16, 8, C_DIM);
+  spr.fillRect(x + 16, y + 2, 2, 4, C_DIM);
+  int w = max(0, min(14, 14 * pct / 100));
+  if (pct > 0) spr.fillRect(x + 1, y + 1, max(1, w), 6, c);
+}
+
+// Right end of the top border: wifi bars, bluetooth, battery, clock. Returns its width.
+static int statusBar(bool paint) {
+  bool up = WiFi.status() == WL_CONNECTED;
+  int pct = M5.Power.getBatteryLevel();
+  bool chg = (int)M5.Power.isCharging() == 1;
+  String pctS = String(pct), clk = clockStr();
+  int x = W - 5;
+  auto put = [&](int w) { x -= w; return x; };
+  if (clk.length()) { int w = spr.textWidth(clk); int px = put(w); if (paint) txt(clk, px, 0, C_DIM); put(5); }
+  { int w = spr.textWidth(pctS); int px = put(w); if (paint) txt(pctS, px, 0, chg ? C_OK : pct > 15 ? C_DIM : C_BAD); put(3); }
+  { int px = put(18); if (paint) iconBattery(px, 0, pct, chg); }
+  if (chg) { put(3); int px = put(5); if (paint) { static const uint8_t bolt[5] = { 0x06, 0x0C, 0x0E, 0x06, 0x0C }; iconBitmap(px, 1, bolt, 5, 5, C_YEL); } }
+  put(4);
+  if (!safeMode) { int px = put(5); if (paint) iconBluetooth(px, 0, bleConnected()); put(4); }
+  { int px = put(11); if (paint) iconWifi(px, 0, up, up ? WiFi.RSSI() : -100); }
+  return W - 5 - x;
+}
+
+// Text where [KEY] segments are drawn as inverse key caps. Returns the width in px.
+static int richText(const String& s, int x, int y, uint16_t fg, bool paint = true) {
+  int x0 = x, i = 0, n = s.length();
+  while (i < n) {
+    if (s[i] == '[') {
+      int j = s.indexOf(']', i);
+      if (j > i) {
+        String k = s.substring(i + 1, j);
+        int w = spr.textWidth(k) + 3;
+        if (paint) { spr.fillRect(x, y - 1, w, 9, C_DIM); txt(k, x + 2, y, C_BG, C_DIM); }
+        x += w + 3; i = j + 1;
+        continue;
+      }
+    }
+    int j = s.indexOf('[', i + 1);
+    if (j < 0) j = n;
+    String seg = s.substring(i, j);
+    if (paint) txt(seg, x, y, fg);
+    x += spr.textWidth(seg); i = j;
+  }
+  return x - x0;
+}
+
+// Frame with a title tab on the top border and key hints (as key caps) on the bottom border.
+static void frame(const String& title, uint16_t accent, const String& hints, uint16_t border = C_FRAME) {
+  spr.drawRoundRect(0, 4, W, H - 4, 3, border);
+  spr.drawFastVLine(LEFT_W, 5, H - 7, border);
   txt(" " + title + " ", 6, 0, accent);
-  String r = " ";
-  r += WiFi.status() == WL_CONNECTED ? "wf" : "--";
-  r += bleConnected() ? " bt " : " ";
-  r += String(M5.Power.getBatteryLevel()) + "%";
-  String clk = clockStr();
-  if (clk.length()) r += " " + clk;
-  r += " ";
-  txt(r, W - 6 - spr.textWidth(r), 0, C_DIM);
-  if (hints.length()) txt(" " + hints + " ", 6, H - 8, C_DIM);
+  int sw = statusBar(false);
+  spr.fillRect(W - 5 - sw - 3, 0, sw + 6, 9, C_BG);
+  statusBar(true);
+  if (hints.length()) {
+    int w = richText(hints, 0, 0, C_DIM, false);
+    spr.fillRect(5, H - 9, w + 8, 9, C_BG);
+    richText(hints, 8, H - 8, C_DIM);
+  }
 }
 
 // Left pane: buddy, its name, and a one-word mood.
@@ -1373,15 +1485,18 @@ static void buddyPane(uint8_t state, const char* mood, uint16_t moodColor) {
 }
 
 // Scrollable text block in the right pane. Returns lines drawn.
-static int textBlock(const String& text, int y, int maxLines, uint16_t color, bool scrollable) {
+static int textBlock(const String& text, int y, int maxLines, uint16_t color, bool scrollable, const char* lead = nullptr) {
   static String lines[MAX_WRAP];
   static uint16_t colors[MAX_WRAP];
-  int n = wrapLines(text, PANE_CHARS, lines, MAX_WRAP, colors, color);
+  int indent = lead ? 2 : 0;   // shell-style hanging indent after a "$" prompt
+  int n = wrapLines(text, PANE_CHARS - indent, lines, MAX_WRAP, colors, color);
   int first = scrollable ? max(0, min(scrollLine, n - maxLines)) : 0;
   if (scrollable) scrollLine = first;
   int shown = 0;
-  for (int i = first; i < n && shown < maxLines; i++, shown++)
-    txt(lines[i], PANE_X, y + shown * LINE_H, colors[i]);
+  for (int i = first; i < n && shown < maxLines; i++, shown++) {
+    txt(lines[i], PANE_X + indent * 6, y + shown * LINE_H, colors[i]);
+    if (lead && i == 0) txt(lead, PANE_X, y + shown * LINE_H, C_OK);
+  }
   if (scrollable && n > maxLines) {   // scrollbar
     int trackY = y, trackH = maxLines * LINE_H - 2;
     int barH = max(4, trackH * maxLines / n);
@@ -1478,17 +1593,20 @@ static String fmtTok(uint32_t n) {
 
 static void drawApproval(Approval* a) {
   bool risky = a->risk == "high";
-  String hint = risky ? "2x A allow  B deny" : a->always.length() ? "A ok  2x A always  B no" : "A allow  B deny";
-  frame(risky ? "!! danger !!" : a->src == SRC_BLE ? "approve? desktop" : "approve?", risky ? C_BAD : C_CLAUDE, hint);
+  String hint = risky ? "[2xA] allow  [B] deny" : a->always.length() ? "[A] ok  [2xA] always  [B] no" : "[A] allow  [B] deny";
+  frame(risky ? "!! danger !!" : a->src == SRC_BLE ? "approve? desktop" : "approve?", risky ? C_BAD : C_CLAUDE, hint,
+        risky ? C_BADDIM : C_FRAME);
   int y = TOP + 2;
-  txt("$ " + fit(a->tool, PANE_CHARS - 2), PANE_X, y, risky ? C_BAD : C_CLAUDE); y += LINE_H;
+  String tool = fit(a->tool, 12);
+  txt(tool, PANE_X, y, risky ? C_BAD : C_CLAUDE);
+  String proj = fit(a->project, PANE_CHARS - (int)tool.length() - 1);
+  txt(proj, W - 6 - spr.textWidth(proj), y, C_DIM); y += LINE_H;
   if (risky && a->riskWhy.length()) { txt(fit(a->riskWhy, PANE_CHARS), PANE_X, y, C_BAD); y += LINE_H; }
-  txt("@" + fit(a->project, PANE_CHARS - 1), PANE_X, y, C_DIM); y += LINE_H;
-  spr.drawFastHLine(PANE_X, y, PANE_W - 6, risky ? C_BAD : C_FRAME);
+  spr.drawFastHLine(PANE_X, y, PANE_W - 6, risky ? C_BADDIM : C_FRAME);
   int rows = (BOTTOM - (y + 4)) / LINE_H - (a->src == SRC_WIFI ? 1 : 0);
-  textBlock(a->detail, y + 4, rows, C_FG, true);
+  textBlock(a->detail, y + 4, rows, C_FG, true, a->tool == "Bash" ? "$" : nullptr);
   String foot = millis() < holdHintUntil ? "double-press A to allow" :
-                a->always.length() ? "2x always: " + a->always : a->src == SRC_WIFI ? "hold B: answer at keyboard" : "";
+                a->always.length() ? "2xA: " + a->always : a->src == SRC_WIFI ? "hold B: at keyboard" : "";
   if (foot.length()) txt(fit(foot, PANE_CHARS), PANE_X, BOTTOM - LINE_H + 2, millis() < holdHintUntil ? C_YEL : C_DIM);
   int pending = 0;
   for (auto& x : approvals) if (x.used && x.decision == D_PENDING) pending++;
@@ -1504,7 +1622,7 @@ static int choiceLabels(StopReq* r, String* out) {
 
 static void drawChoice(StopReq* r) {
   bool q = r->kind == "question";
-  frame(q ? "question" : "done > next?", q ? C_CLAUDE : C_OK, "B next  A pick  hold A talk");
+  frame(q ? "question" : "done > next?", q ? C_CLAUDE : C_OK, "[B] next  [A] pick  [hold A] talk");
   txt("@" + fit(r->project, PANE_CHARS - 1), PANE_X, TOP + 2, C_DIM);
   int used = textBlock(q ? r->title : r->last, TOP + 2 + LINE_H, q ? 4 : 3, q ? C_FG : C_DIM, true);
   int y = TOP + 6 + (used + 1) * LINE_H;
@@ -1538,7 +1656,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
 
 static void drawActions() {
   Session* s = targetSession();
-  frame("menu", C_CLAUDE, "B next  PWR up  A ok");
+  frame("menu", C_CLAUDE, "[B] next  [P] up  [A] ok");
   txt(s ? ("-> " + fit(sessionLabel(*s), PANE_CHARS - 3)) : String("no cli session"), PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS]; MenuEntry ents[MAX_ITEMS];
   int n = menuEntries(ents, labels);
@@ -1546,25 +1664,24 @@ static void drawActions() {
 }
 
 static void drawHelp() {
-  frame("buttons", C_BLUE, "any key: back");
-  int y = TOP + 2;
-  auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
-  line("A front  B side  P power", C_DIM);
-  line("approve: A ok  B no", C_FG);
-  line("  2x A: always allow", C_FG);
-  line("  danger: 2x A to ok", C_BAD);
-  line("  hold A: no + say why", C_FG);
-  line("  hold B: at keyboard", C_FG);
-  line("lists: B/P move  A pick", C_FG);
-  line("home: A details  B: menu", C_FG);
-  line("hold A: talk to claude", C_CLAUDE);
-  line("hold B: back / menu", C_FG);
-  line("tilt: scroll long text", C_DIM);
+  frame("buttons", C_BLUE, "[any key] back");
+  int y = TOP + 3;
+  auto line = [&](const String& keys, uint16_t c = C_FG) { richText(keys, PANE_X, y + 1, c); y += LINE_H + 2; };
+  line("[A] allow  [B] deny");
+  line("[2xA] always allow");
+  line("[hold A] deny + why");
+  line("[hold B] at keyboard");
+  y += 3;
+  line("[B] next  [A] pick");
+  line("[P] up  [hold B] back");
+  y += 3;
+  line("[A] details  [B] menu");
+  line("[hold A] talk", C_CLAUDE);
 }
 
 // Hardware test: live readings to check a new Stick in a minute.
 static void drawTest() {
-  frame("hardware test", C_BLUE, "A beep  hold B back");
+  frame("hardware test", C_BLUE, "[A] beep  [hold B] back");
   int y = TOP + 2;
   auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
   bool a = M5.BtnA.isPressed(), b = M5.BtnB.isPressed(), p = M5.BtnPWR.isPressed();
@@ -1592,7 +1709,7 @@ static int updateLabels(String* out) {
 }
 
 static void drawUpdatePrompt() {
-  frame("update available!", C_OK, "B next  A pick  hold B later");
+  frame("update available!", C_OK, "[B] next  [A] pick  [hold B] later");
   txt("v" + String(FW_VERSION) + " -> v" + upd.version, PANE_X, TOP + 2, C_OK);
   spr.drawFastHLine(PANE_X, TOP + 2 + LINE_H, PANE_W - 6, C_FRAME);
   String notes = upd.notes.length() ? "\n" + upd.notes : String("\n(no changelog)");
@@ -1616,20 +1733,20 @@ static void drawUpdateProgress() {
 }
 
 static void drawNotice() {
-  frame(noticeTitle, noticeColor, "any key: ok");
+  frame(noticeTitle, noticeColor, "[any key] ok");
   textBlock(noticeText, TOP + 8, 10, noticeColor, false);
 }
 
 // Push-to-talk screens
 static void drawVoiceCard() {
   if (voiceState == V_ERROR) {
-    frame("voice", C_BAD, "any key: ok");
+    frame("voice", C_BAD, "[any key] ok");
     textBlock(voiceErr, TOP + 10, 6, C_BAD, false);
     return;
   }
   Session* s = findSession(voiceTarget, false);
   frame(voiceApproval ? "deny + tell claude?" : voiceStopReq ? "reply?" : "send to claude?",
-        voiceApproval ? C_BAD : C_CLAUDE, "A send  B discard  hold A redo");
+        voiceApproval ? C_BAD : C_CLAUDE, "[A] send  [B] discard  [hold A] redo");
   txt("@" + fit(s ? sessionLabel(*s) : String("?"), PANE_CHARS - 1), PANE_X, TOP + 2, C_DIM);
   spr.drawFastHLine(PANE_X, TOP + 2 + LINE_H, PANE_W - 6, C_FRAME);
   textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H, 10, C_FG, true);
@@ -1639,7 +1756,7 @@ static void drawVoiceRec(uint32_t ms) {
   spr.fillScreen(C_BG);
   spr.setFont(&fonts::Font0); spr.setTextSize(1);
   bool rec = voiceState == V_REC;
-  frame(rec ? "listening" : "transcribing", C_CLAUDE, rec ? "release A to send" : "");
+  frame(rec ? "listening" : "transcribing", C_CLAUDE, rec ? "release [A] to send" : "");
   if (rec) {
     txt(String(ms / 1000) + "." + String((ms / 100) % 10) + "s / 20s", PANE_X, TOP + 4, C_FG);
     int w = min(PANE_W - 8, voiceLevel * (PANE_W - 8) / 12000 + 2);
@@ -1666,7 +1783,7 @@ static int sessionItems(String* labels, String* marks, String* ids) {
 }
 
 static void drawSessions() {
-  frame("tie to session", C_BLUE, "B next  PWR up  A pin");
+  frame("tie to session", C_BLUE, "[B] next  [P] up  [A] pin");
   txt("* = stick answers these", PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS], marks[MAX_ITEMS], ids[MAX_ITEMS];
   int n = sessionItems(labels, marks, ids);
@@ -1674,22 +1791,26 @@ static void drawSessions() {
 }
 
 static void drawInfo() {
-  frame("info", C_BLUE, "any key: back");
+  frame("info", C_BLUE, "[any key] back");
   int y = TOP + 2;
-  auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
-  line("fw " + String(FW_VERSION), C_FG);
-  line("bt " + devName, C_FG);
-  line("wifi " + (ssid.length() ? ssid : String("(none)")), WiFi.status() == WL_CONNECTED ? C_OK : C_BAD);
-  line(WiFi.localIP().toString() + ":" + String(HTTP_PORT), C_FG);
-  line(mdnsHost + ".local", C_DIM);
-  line("token", C_DIM);
-  line(token, C_CLAUDE);
-  line("ok " + String(stats.appr) + "  no " + String(stats.deny), C_FG);
-  line(String("tilt ") + (tiltMode == 0 ? "off" : tiltMode > 0 ? "on" : "flipped") + "  voice " + (conf.sttUrl.length() ? "on" : "off"), C_DIM);
-  line("reset: " + resetWhy + (safeMode ? "  SAFE MODE" : ""), safeMode ? C_YEL : C_DIM);
-  String tk = "cli today " + fmtTok(tokensToday());
+  auto kv = [&](const char* k, const String& v, uint16_t c = C_FG) {
+    txt(k, PANE_X, y, C_DIM);
+    txt(fit(v, PANE_CHARS - 5), PANE_X + 30, y, c);
+    y += LINE_H;
+  };
+  bool up = WiFi.status() == WL_CONNECTED;
+  kv("fw", FW_VERSION);
+  kv("bt", devName);
+  kv("wifi", ssid.length() ? ssid : String("(none)"), up ? C_OK : C_BAD);
+  kv("ip", WiFi.localIP().toString() + ":" + String(HTTP_PORT));
+  kv("host", mdnsHost);
+  kv("key", token, C_CLAUDE);
+  kv("taps", String(stats.appr) + " ok  " + String(stats.deny) + " no");
+  String tk = fmtTok(tokensToday()) + " today";
   if (desk.lastBeat) tk += "  desk " + fmtTok(desk.tokensToday);
-  line(tk, C_DIM);
+  kv("tok", tk);
+  kv("set", String("tilt ") + (tiltMode == 0 ? "off" : tiltMode > 0 ? "on" : "flip") + "  voice " + (conf.sttUrl.length() ? "on" : "off"), C_DIM);
+  kv("rst", resetWhy + (safeMode ? "  SAFE" : ""), safeMode ? C_YEL : C_DIM);
 }
 
 static void drawPasskey(uint32_t pk) {
@@ -1704,7 +1825,7 @@ static void drawPasskey(uint32_t pk) {
 
 static void drawSetup() {
   bool up = WiFi.status() == WL_CONNECTED;
-  frame(up ? "almost there" : "hello!", C_CLAUDE, "hold B: skip setup");
+  frame(up ? "almost there" : "hello!", C_CLAUDE, "[hold B] skip setup");
   int y = TOP + 3;
   auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
   if (up) {
@@ -1737,7 +1858,7 @@ static void drawSetup() {
 // Session details: to-do list and token usage. B / PWR switch session.
 static void drawDetail() {
   Session* s = targetSession();
-  frame("session", C_BLUE, "B/P next  A back  hold A talk");
+  frame("session", C_BLUE, "[B/P] next  [A] back  [hold A] talk");
   if (!s) { txt("no claude session yet", PANE_X, TOP + 20, C_DIM); return; }
   int y = TOP + 2;
   String st = s->state;
@@ -1784,46 +1905,71 @@ static void drawDetail() {
   if (first > 0 || s->todoSkip) txt("^", W - 10, y0, C_DIM);
 }
 
+static String fmtAge(uint32_t ms) {
+  uint32_t t = ms / 1000;
+  if (t < 60) return String(t) + "s";
+  if (t < 3600) return String(t / 60) + "m";
+  return String(t / 3600) + "h";
+}
+
+static bool blinkOn() { return (millis() / 500) % 2 == 0; }
+
 static void drawHome() {
   String title = titleBase();
   if (pinned.length()) title += " *";
-  frame(title, remoteMode ? C_CLAUDE : C_FG, "A details  hold A talk  B menu");
+  frame(title, remoteMode ? C_CLAUDE : C_FG, "[A] details  [hold A] talk  [B] menu");
   int y = TOP + 2;
+  uint32_t tt = tokensToday();
+  int limitY = tt ? BOTTOM - 2 * LINE_H : BOTTOM - LINE_H;
   if (desk.lastBeat) {
     txt("desktop " + String(desk.running) + "/" + String(desk.total), PANE_X, y, C_BLUE); y += LINE_H;
     txt("  " + fit(desk.msg.length() ? desk.msg : desk.entry, PANE_CHARS - 2), PANE_X, y, C_DIM); y += LINE_H + 3;
   }
   Session* tgt = targetSession();
   int shown = 0;
+  uint32_t now = millis();
   for (auto& s : sessions) {
-    if (!s.used || y > BOTTOM - LINE_H) continue;
+    if (!s.used || y > limitY) continue;
     bool isT = &s == tgt;
-    spr.fillRect(PANE_X, y + 1, 4, 6, stateColor(s.state));
+    bool active = s.state == "tool" || s.state == "working";
+    uint16_t sc = stateColor(s.state);
+    if (active) {   // spinner instead of the state square
+      static const char SPIN[] = "|/-\\";
+      txt(String(SPIN[(now / 200) % 4]), PANE_X, y, sc);
+    } else spr.fillRect(PANE_X, y + 1, 4, 6, sc);
+    String st = s.stopFlag ? "stop.." : s.inject.length() ? "msg.." : s.state;
+    if (!s.stopFlag && !s.inject.length() && (active || s.state == "done") && now - s.stateSince >= 3000)
+      st += " " + fmtAge(now - s.stateSince);
     String head = sessionLabel(s);
     if (pinned == s.id) head = "*" + head;
-    txt(fit(head, PANE_CHARS - 10), PANE_X + 7, y, isT ? C_FG : C_DIM);
-    String st = s.stopFlag ? "stop.." : s.inject.length() ? "msg.." : s.state;
-    txt(st, W - 6 - spr.textWidth(st), y, stateColor(s.state));
-    if (isT) spr.drawFastHLine(PANE_X + 7, y + 8, spr.textWidth(fit(head, PANE_CHARS - 10)), C_CLAUDE);
+    int room = PANE_CHARS - 2 - (int)st.length() - 1;
+    head = fit(head, room);
+    txt(head, PANE_X + 7, y, isT ? C_FG : C_DIM);
+    txt(st, W - 6 - spr.textWidth(st), y, sc);
+    if (isT) spr.drawFastHLine(PANE_X + 7, y + 8, spr.textWidth(head), C_CLAUDE);
     y += LINE_H;
-    if (y <= BOTTOM - LINE_H && (s.detail.length() || s.todoTotal)) {
-      int x = PANE_X + 12, room = PANE_CHARS - 2;
+    if (y <= limitY && (s.detail.length() || s.todoTotal)) {
+      int x = PANE_X + 12, room2 = PANE_CHARS - 2;
       String d = s.detail;
       if (s.todoTotal) {
         String pr = String(s.todoDone) + "/" + String(s.todoTotal);
         txt(pr, x, y, s.todoDone == s.todoTotal ? C_OK : C_CLAUDE);
-        x += spr.textWidth(pr) + 6; room -= pr.length() + 1;
+        x += spr.textWidth(pr) + 6; room2 -= pr.length() + 1;
         if (s.todoNow.length() && s.state != "done") d = s.todoNow;
       }
-      txt(fit(d, room), x, y, C_DIM);
+      txt(fit(d, room2), x, y, C_DIM);
       y += LINE_H;
     }
     y += 2; shown++;
   }
   if (!shown && !desk.lastBeat && ssid.length()) {
-    txt(WiFi.status() == WL_CONNECTED ? "waiting for claude..." : "joining wifi...", PANE_X, TOP + 30, C_DIM);
-    if (WiFi.status() == WL_CONNECTED) txt(WiFi.localIP().toString(), PANE_X, TOP + 30 + LINE_H, C_FRAME);
+    bool up = WiFi.status() == WL_CONNECTED;
+    String msg = up ? "$ waiting for claude" : "$ joining wifi";
+    txt(msg, PANE_X, TOP + 30, C_DIM);
+    if (blinkOn()) spr.fillRect(PANE_X + spr.textWidth(msg) + 2, TOP + 30, 5, 7, up ? C_CLAUDE : C_YEL);
+    if (up) txt(WiFi.localIP().toString(), PANE_X, TOP + 30 + LINE_H + 2, C_FRAME);
   }
+  if (tt) txt(fmtTok(tt) + " tok today", PANE_X, BOTTOM - LINE_H + 2, C_DIM);
 }
 
 static void draw() {

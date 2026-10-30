@@ -229,7 +229,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
-#define EMBED_HOOK_SHA "7e4668452e64c05b0323b10f1e1bed422b576a42ce9e2859231604943d569dc0"
+#define EMBED_HOOK_SHA "c871ae6f5991f04c545a218d407357c997b1ace4607cb440b8421c4411934a57"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -255,6 +255,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -512,6 +513,43 @@ def discover(cfg):
     return None
 
 
+# The Stick's 6x8 font only has ASCII. Fold smart punctuation and accents to their plain
+# equivalents so text reads right instead of showing wrong glyphs.
+_PUNCT = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": ",", "\u201c": '"', "\u201d": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-", "\u2011": "-", "\u2026": "...",
+    "\u2022": "*", "\u2219": "*", "\u00b7": ".", "\u2192": "->", "\u2190": "<-", "\u21d2": "=>",
+    "\u00d7": "x", "\u00a0": " ", "\u2713": "v", "\u2714": "v", "\u2717": "x", "\u2718": "x",
+    "\t": "  ", "\r": "",
+})
+
+
+def ascii_fold(s):
+    s = s.translate(_PUNCT)
+    if s.isascii():
+        return s
+    out, prev_q = [], False
+    for c in unicodedata.normalize("NFKD", s):
+        if ord(c) < 128:
+            out.append(c)
+            prev_q = False
+        elif not unicodedata.combining(c) and not prev_q:
+            out.append("?")   # emoji and other scripts: one placeholder per run
+            prev_q = True
+    return "".join(out)
+
+
+def fold_payload(obj, key=None):
+    """Fold every string headed for the screen. 'text' fields are what gets sent back to Claude: untouched."""
+    if isinstance(obj, str):
+        return obj if key == "text" else ascii_fold(obj)
+    if isinstance(obj, dict):
+        return {k: fold_payload(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [fold_payload(v, key) for v in obj]
+    return obj
+
+
 class Device:
     def __init__(self, cfg, may_discover=False):
         self.cfg = cfg
@@ -521,7 +559,7 @@ class Device:
 
     def call(self, method, path, body=None, timeout=1.5):
         try:
-            return _http_json(self.base + path, self.token, method, body, timeout)
+            return _http_json(self.base + path, self.token, method, fold_payload(body), timeout)
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 sys.stderr.write("claudestick: the Stick rejected the token; re-run its install command\n")

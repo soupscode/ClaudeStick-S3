@@ -182,7 +182,7 @@ class H(BaseHTTPRequestHandler):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
             hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
-            return self.reply({"ok": True, "fw": "0.7.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+            return self.reply({"ok": True, "fw": "0.7.1", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
                                "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")

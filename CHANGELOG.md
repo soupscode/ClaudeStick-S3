@@ -2,6 +2,14 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.7.1
+- New status bar: Wi-Fi bars, Bluetooth, battery gauge, clock
+- Key-cap hints along the bottom
+- Spinner and elapsed time on working sessions
+- Shell-style command cards ($ prompt, wrapped at / _ - =)
+- Red border on danger cards
+- Smart quotes, accents and emoji show as plain text
+
 ## 0.7.0
 - Session details (tap A on Home): to-do list + tokens
 - Home shows to-do progress per session

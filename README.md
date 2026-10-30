@@ -26,6 +26,14 @@ The mode switch reaches Claude at the next hook (tool result, prompt, or Done-me
 
 The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies on the left (from claude-desktop-buddy), content on the right, and key hints on the bottom border. The buddy reacts: busy while Claude works, attention when it needs you, a celebration when it finishes, dizzy on errors, hearts when you approve. Pick a species from the menu. Previews are in `docs/screens.png`, `docs/screens-v0.7.png` and `docs/buddies.png`.
 
+Reading the screen:
+
+- **Top bar:** title tab on the left; Wi-Fi bars, Bluetooth (blue when connected), battery gauge (green while charging) and the clock on the right.
+- **Bottom bar:** the buttons that do something right now, drawn as key caps.
+- **Home:** a spinner and elapsed time (`tool 12s`) on working sessions, `done 3m` once finished, the to-do progress, and today's tokens along the bottom.
+- **Cards:** shell commands start with a green `$` and wrap with a hanging indent (long paths break after `/`, `_`, `-`). A **red border** means danger.
+- **Text:** the Stick's font is ASCII only, so smart quotes, accents and emoji are shown as plain equivalents (`'`, `e`, `?`). What Claude receives back is never altered.
+
 **A** = front button, **B** = side button, **P** = power button (short press), *hold* ≈ 0.7 s, *2x* = double-press within 0.35 s.
 
 On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".

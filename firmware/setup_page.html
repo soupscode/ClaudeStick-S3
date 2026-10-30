@@ -98,7 +98,7 @@ const newer=(a,b)=>{const x=a.split('.').map(Number),y=b.split('.').map(Number);
 async function check(){let u=$('uu').value.trim();if(!u){$('umsg').textContent=' set the update source first';return}if(!u.endsWith('/'))u+='/';
 try{const m=await (await fetch(u+'ota.json',{cache:'no-store'})).json();
 if(!newer(m.version,I.fw)){$('umsg').innerHTML=' <span class=ok>up to date ('+I.fw+')</span>';return}
-$('umsg').innerHTML=` ${m.version} available <button onclick="getUpdate('${u+m.app}')">install</button>`}catch(e){$('umsg').innerHTML=' <span class=bad>could not read '+u+'ota.json</span>'}}
+$('umsg').innerHTML=` ${m.version} available <button onclick="getUpdate('${u+m.app}')">install</button>`+(m.notes?`<pre>${m.notes.replace(/</g,'&lt;')}</pre>`:'')}catch(e){$('umsg').innerHTML=' <span class=bad>could not read '+u+'ota.json</span>'}}
 async function getUpdate(url){$('umsg').textContent=' downloading…';const b=await (await fetch(url,{cache:'no-store'})).blob();flash(b)}
 function flash(file){if(!file)return;const fd=new FormData();fd.append('file',file,'claudestick-app.bin');const x=new XMLHttpRequest();x.open('POST',q('/ota'));x.setRequestHeader('X-Token',T);
 $('up').classList.remove('hide');x.upload.onprogress=e=>{if(e.lengthComputable)$('up').value=100*e.loaded/e.total};

@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.5.0";
+static const char*    FW_VERSION   = "0.6.0";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -323,6 +323,8 @@ static void loadConfig() {
   }
   if (!conf.updateUrl.length()) conf.updateUrl = CS_UPDATE_URL;
 }
+
+#include "update.inc"   // update checks, rollback, notices (needs settings + helpers above)
 
 // ------------------------------------------------------------ BLE side ---
 
@@ -613,7 +615,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html><html><head><meta
 .row{display:flex;justify-content:space-between;align-items:center}.risk{border:1px solid #b33}.rk{color:#f55;font-weight:600}
 pre{white-space:pre-wrap;word-break:break-word;margin:6px 0;font-size:13px;color:#bbb}.add{color:#5c5}.del{color:#e66}</style></head><body><main>
 <div class=row><h3>ClaudeStick</h3><span><button id=rm onclick="act({action:'remote'})"></button> <a href="#" id=st style="color:#888">settings</a></span></div>
-<div id=ap></div><div id=ch></div><div id=ss></div>
+<div id=ub></div><div id=ap></div><div id=ch></div><div id=ss></div>
 <div class=c><div class=t>Send to Claude</div><select id=sel></select>
 <textarea id=tx rows=3 placeholder="Type an instruction..."></textarea>
 <button class=ac onclick="say()">Send</button><button class=no onclick="act({action:'stop',session:sel.value})">Stop</button>
@@ -625,7 +627,7 @@ async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'X
 async function act(b){await api('/act',b);load()}
 function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
 async function load(){try{S=await api('/state')}catch(x){return}
-rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
+ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
 const diff=t=>e(t).split('\n').map(l=>l.startsWith('+ ')?`<span class=add>${l}</span>`:l.startsWith('- ')?`<span class=del>${l}</span>`:l).join('\n');
 ap.innerHTML=(S.approvals||[]).map(a=>`<div class="c ${a.risk=='high'?'risk':''}"><div class=t>${a.risk=='high'?'<span class=rk>DANGER</span> ':''}Approve? ${e(a.tool)} <span class=d>${e(a.project)}</span></div>${a.risk_why?`<div class=rk>${e(a.risk_why)}</div>`:''}<pre>${diff(a.detail)}</pre>
 <button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
@@ -647,6 +649,7 @@ static void hState() {
   updateRemote();
   out["remote"] = remoteMode;
   out["remote_setting"] = remoteName(conf.remote);
+  if (upd.available) out["update"] = upd.version;
   out["pinned"] = pinned;
   JsonArray ss = out["sessions"].to<JsonArray>();
   for (auto& s : sessions) if (s.used) {
@@ -743,6 +746,7 @@ static void hHealth() {
   JsonDocument out;
   out["ok"] = true; out["fw"] = FW_VERSION; out["name"] = devName;
   out["id"] = devId; out["host"] = mdnsHost + ".local";
+  out["hook"] = EMBED_HOOK_SHA;
   out["auth"] = token.length() > 0;
   sendJson(out);
 }
@@ -1335,6 +1339,7 @@ static uint8_t buddyState(const char** mood, uint16_t* moodColor) {
     if (r->kind == "question") { *mood = "question"; return B_ATTENTION; }
     *mood = "done!"; *moodColor = C_OK; return B_CELEBRATE;
   }
+  if (screen == SCR_HOME && updatePromptDue()) { *mood = "new stuff!"; *moodColor = C_OK; return B_CELEBRATE; }
   Session* t = targetSession();
   if (t) {
     if (t->state == "error" && now - t->stateSince < 6000) { *mood = "oops"; *moodColor = C_BAD; return B_DIZZY; }
@@ -1393,7 +1398,7 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_UPDATE, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
@@ -1404,6 +1409,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
   add(MI_REMOTE, 0, String("remote: ") + remoteName(conf.remote) + (conf.remote == 2 ? (remoteMode ? " (on)" : " (off)") : ""));
   add(MI_TIE, 0, pinned.length() ? "tie to session (tied)" : "tie to session");
   add(MI_BUDDY, 0, String("buddy: ") + buddySpeciesName());
+  add(MI_UPDATE, 0, upd.available ? "update to v" + upd.version : String("check for updates"));
   add(MI_HELP, 0, "button help");
   add(MI_INFO, 0, "info");
   add(MI_TOKEN, 0, "new token (hold A)");
@@ -1436,6 +1442,41 @@ static void drawHelp() {
   line("hold B: menu", C_FG);
   line("tilt: scroll long text", C_DIM);
   line("A+B at power-on: reset", C_DIM);
+}
+
+// Update prompt + progress + one-off notices
+static int updateLabels(String* out) {
+  out[0] = "update now"; out[1] = "remind me later"; out[2] = "skip this version";
+  return 3;
+}
+
+static void drawUpdatePrompt() {
+  frame("update available!", C_OK, "B next  A pick  hold B later");
+  txt("v" + String(FW_VERSION) + " -> v" + upd.version, RX, TOP + 2, C_OK);
+  spr.drawFastHLine(RX, TOP + 2 + LINE_H, RW - 6, C_FRAME);
+  String notes = upd.notes.length() ? "\n" + upd.notes : String("\n(no changelog)");
+  notes.replace("\n- ", "\n* ");           // changelog bullets, not diff lines
+  textBlock(notes.substring(1), TOP + 5 + LINE_H, 6, C_FG, true);
+  String labels[3]; int n = updateLabels(labels);
+  listBlock(labels, n, TOP + 6 + 8 * LINE_H, C_OK);
+}
+
+static void drawUpdateProgress() {
+  spr.fillScreen(C_BG); spr.setFont(&fonts::Font0); spr.setTextSize(1);
+  frame("updating", C_OK, "don't unplug");
+  txt("v" + String(FW_VERSION) + " -> v" + upd.version, RX, TOP + 4, C_FG);
+  int p = max(0, min(100, upd.progress));
+  spr.drawRect(RX, TOP + 22, RW - 6, 10, C_FRAME);
+  spr.fillRect(RX + 1, TOP + 23, (RW - 8) * p / 100, 8, C_OK);
+  txt(String(p) + "%", RX, TOP + 38, C_DIM);
+  if (p >= 100) txt("restarting...", RX, TOP + 50, C_OK);
+  buddyPane(p >= 100 ? B_CELEBRATE : B_BUSY, p >= 100 ? "done!" : "updating", C_OK);
+  spr.pushSprite(0, 0);
+}
+
+static void drawNotice() {
+  frame(noticeTitle, noticeColor, "any key: ok");
+  textBlock(noticeText, TOP + 8, 10, noticeColor, false);
 }
 
 // Push-to-talk screens
@@ -1591,12 +1632,15 @@ static void draw() {
   StopReq* r = topStop();
   uint32_t key = pk ? 1 : a ? a->id : r ? r->id : 0;
   if (voiceState == V_CONFIRM && !pk && !a) key = 0x7FFFFFFF;
+  else if (!pk && !a && !r && screen == SCR_HOME && updatePromptDue()) key = 0x7FFFFFFE;
   if (key != scrollKey) { scrollKey = key; scrollLine = 0; }
 
   if (pk) drawPasskey(pk);
   else if (a) drawApproval(a);
   else if (voiceState == V_CONFIRM || voiceState == V_ERROR) drawVoiceCard();
+  else if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) drawNotice();
   else if (r) drawChoice(r);
+  else if (screen == SCR_HOME && updatePromptDue()) drawUpdatePrompt();
   else if (!setupDone) drawSetup();
   else if (screen == SCR_ACTIONS) drawActions();
   else if (screen == SCR_SESSIONS) drawSessions();
@@ -1650,6 +1694,7 @@ static void buttons() {
   }
 
   if (voiceState == V_ERROR) { voiceState = V_IDLE; return; }
+  if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) { noticeUntil = 0; return; }
   if (voiceState == V_CONFIRM) {
     if (aClick) voiceSend();
     else if (bClick || bHold) { voiceState = V_IDLE; beep(0); }
@@ -1667,6 +1712,17 @@ static void buttons() {
     if (aHold) { voiceCapture(r); return; }
     if (bHold || (aClick && menuIdx == total - 1)) { r->result = -2; menuIdx = 0; beep(0); }
     else if (aClick) { r->result = menuIdx; menuIdx = 0; beep(2); }
+    return;
+  }
+
+  if (screen == SCR_HOME && setupDone && updatePromptDue()) {
+    listNav(3, bClick, pClick);
+    if (bHold) { upd.remindAt = millis() + 24UL * 3600 * 1000; menuIdx = 0; beep(0); return; }
+    if (!aClick) return;
+    if (menuIdx == 0) { menuIdx = 0; installUpdate(); }
+    else if (menuIdx == 1) { upd.remindAt = millis() + 24UL * 3600 * 1000; beep(0); }
+    else { skipVersion = upd.version; prefs.putString("skipver", skipVersion); upd.available = false; beep(0); }
+    menuIdx = 0;
     return;
   }
 
@@ -1692,6 +1748,9 @@ static void buttons() {
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
       case MI_BUDDY:  prefs.putUChar("buddy", buddyNextSpecies()); break;            // stay in menu
       case MI_HELP:   screen = SCR_HELP; menuIdx = 0; break;
+      case MI_UPDATE: screen = SCR_HOME; menuIdx = 0;
+                      if (upd.available) upd.remindAt = 0; else { notice("updates", "checking...", C_DIM, 15000); draw(); checkForUpdate(true); }
+                      break;
       case MI_INFO:   screen = SCR_INFO; menuIdx = 0; break;
       case MI_TOKEN:  holdHintUntil = millis() + 2000; beep(3); break;              // needs a hold
       case MI_SETUP:  setupDone = false; prefs.putBool("setup", false); screen = SCR_HOME; menuIdx = 0; break;
@@ -1749,11 +1808,13 @@ void setup() {
   spr.createSprite(W, H);
 
   prefs.begin("cstick", false);
+  bootGuard();                       // may switch back to the previous firmware and restart
   ssid  = prefs.getString("ssid", CS_WIFI_SSID);
   pass  = prefs.getString("pass", CS_WIFI_PASS);
   token = prefs.getString("token", CS_TOKEN);
   tiltMode = prefs.getChar("tilt", 1);
   loadConfig();
+  skipVersion = prefs.getString("skipver", "");
   setupDone = prefs.getBool("setup", false);
   volume = prefs.getUChar("vol", 120);
   M5.Speaker.setVolume(volume);
@@ -1787,6 +1848,7 @@ void setup() {
 
   bleInit(devName.c_str());
   startHttp();
+  bootNotices();
   lastActivity = millis();
   Serial.printf("ClaudeStick %s ready. Type 'info' for details.\n", FW_VERSION);
 }
@@ -1799,6 +1861,8 @@ void loop() {
   pollBle();
   expireStale();
   apTick();
+  updateTick();
+  bootHealthTick();
   buttons();
   tiltTick();
 

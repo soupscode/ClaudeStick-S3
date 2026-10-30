@@ -204,6 +204,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
+#define EMBED_HOOK_SHA "61e8af304c94565ae60d6b51a32cf52baba8742028a985e0c5540cc48d61a752"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -513,13 +514,38 @@ class Device:
             return None
 
     def refresh_settings(self):
-        """Pull macros/waits/alerts from the Stick at most once a minute."""
+        """Pull macros/waits/alerts from the Stick at most once a minute, and keep this hook
+        in step with the Stick's firmware (it serves the matching hook)."""
         if _recent(DEVICE_CFG, DEVICE_CFG_TTL_S):
             return
         r = self.call("GET", "/config", timeout=1.0)
         if r is not None:
             _write_json(DEVICE_CFG, r)
             self.cfg.update(load_config())
+            self.self_update()
+
+    def self_update(self):
+        if os.environ.get("CLAUDESTICK_NO_SELF_UPDATE"):
+            return
+        try:
+            want = (self.call("GET", "/health", timeout=1.0) or {}).get("hook")
+            me = os.path.abspath(__file__)
+            with open(me, "rb") as f:
+                if not want or hashlib.sha256(f.read()).hexdigest() == want:
+                    return
+            req = urllib.request.Request(self.base + "/claudestick_hook.py")
+            with _lan.open(req, timeout=5) as resp:
+                body = resp.read()
+            if hashlib.sha256(body).hexdigest() != want:
+                return
+            compile(body, me, "exec")  # never install something that doesn't parse
+            tmp = me + ".new"
+            with open(tmp, "wb") as f:
+                f.write(body)
+            os.replace(tmp, me)
+            sys.stderr.write("claudestick: hook updated to match the Stick's firmware\n")
+        except (OSError, SyntaxError, ValueError):
+            pass
 
 
 # --------------------------------------------------------------- formatting
@@ -1054,7 +1080,7 @@ const newer=(a,b)=>{const x=a.split('.').map(Number),y=b.split('.').map(Number);
 async function check(){let u=$('uu').value.trim();if(!u){$('umsg').textContent=' set the update source first';return}if(!u.endsWith('/'))u+='/';
 try{const m=await (await fetch(u+'ota.json',{cache:'no-store'})).json();
 if(!newer(m.version,I.fw)){$('umsg').innerHTML=' <span class=ok>up to date ('+I.fw+')</span>';return}
-$('umsg').innerHTML=` ${m.version} available <button onclick="getUpdate('${u+m.app}')">install</button>`}catch(e){$('umsg').innerHTML=' <span class=bad>could not read '+u+'ota.json</span>'}}
+$('umsg').innerHTML=` ${m.version} available <button onclick="getUpdate('${u+m.app}')">install</button>`+(m.notes?`<pre>${m.notes.replace(/</g,'&lt;')}</pre>`:'')}catch(e){$('umsg').innerHTML=' <span class=bad>could not read '+u+'ota.json</span>'}}
 async function getUpdate(url){$('umsg').textContent=' downloading…';const b=await (await fetch(url,{cache:'no-store'})).blob();flash(b)}
 function flash(file){if(!file)return;const fd=new FormData();fd.append('file',file,'claudestick-app.bin');const x=new XMLHttpRequest();x.open('POST',q('/ota'));x.setRequestHeader('X-Token',T);
 $('up').classList.remove('hide');x.upload.onprogress=e=>{if(e.lengthComputable)$('up').value=100*e.loaded/e.total};

@@ -129,6 +129,13 @@ Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Ever
 - **Phone alerts:** an [ntfy](https://ntfy.sh) topic and token, with a *send test* button. In remote mode, approvals arrive as notifications with **Approve / Always / Deny** buttons. Those buttons call the Stick directly, so your phone must reach it (home Wi-Fi or Tailscale).
 - **Firmware:** *check for update* reads `ota.json` from your flasher site and installs over Wi-Fi with a progress bar. You can also upload a `claudestick-app.bin` by hand.
 
+### Updates
+
+- **The prompt:** the Stick checks `<update source>/ota.json` 90 s after boot and every 6 h. Downloads are HTTPS, verified against an embedded Mozilla root bundle (`tools/gen_ca_bundle.sh` regenerates it). A newer version shows **update available!** with that version's bullets from `CHANGELOG.md`, and three choices: **update now** · **remind me later** (24 h) · **skip this version**. *Menu → check for updates* checks on demand.
+- **Rollback:** a boot only counts as good after 20 s of running. Three bad boots in a row switch back to the previous firmware, skip the failed version, and show a "rolled back" notice. No USB needed.
+- **Hooks follow the firmware:** each machine's hook compares itself with the copy the Stick serves (sha256) and replaces itself if it's out of date. It checks the hash and that the file parses before swapping.
+- **Releasing:** bump `FW_VERSION` in `firmware/src/main.cpp`, add a `## x.y.z` section to `CHANGELOG.md`, and push. CI builds and publishes, and every Stick offers the update.
+
 `~/.claudestick/config.json` on each machine only holds `host`, `port`, `token` and the Stick's `device_id`. **If the Stick's IP changes**, the hook looks for it by device id (mDNS name `claudestick-xxxx.local`, then a quick sweep of the local /24) at the next prompt, then updates the file itself. Tool calls never wait on that search.
 
 ## Phone

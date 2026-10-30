@@ -307,13 +307,38 @@ class Device:
             return None
 
     def refresh_settings(self):
-        """Pull macros/waits/alerts from the Stick at most once a minute."""
+        """Pull macros/waits/alerts from the Stick at most once a minute, and keep this hook
+        in step with the Stick's firmware (it serves the matching hook)."""
         if _recent(DEVICE_CFG, DEVICE_CFG_TTL_S):
             return
         r = self.call("GET", "/config", timeout=1.0)
         if r is not None:
             _write_json(DEVICE_CFG, r)
             self.cfg.update(load_config())
+            self.self_update()
+
+    def self_update(self):
+        if os.environ.get("CLAUDESTICK_NO_SELF_UPDATE"):
+            return
+        try:
+            want = (self.call("GET", "/health", timeout=1.0) or {}).get("hook")
+            me = os.path.abspath(__file__)
+            with open(me, "rb") as f:
+                if not want or hashlib.sha256(f.read()).hexdigest() == want:
+                    return
+            req = urllib.request.Request(self.base + "/claudestick_hook.py")
+            with _lan.open(req, timeout=5) as resp:
+                body = resp.read()
+            if hashlib.sha256(body).hexdigest() != want:
+                return
+            compile(body, me, "exec")  # never install something that doesn't parse
+            tmp = me + ".new"
+            with open(tmp, "wb") as f:
+                f.write(body)
+            os.replace(tmp, me)
+            sys.stderr.write("claudestick: hook updated to match the Stick's firmware\n")
+        except (OSError, SyntaxError, ValueError):
+            pass
 
 
 # --------------------------------------------------------------- formatting

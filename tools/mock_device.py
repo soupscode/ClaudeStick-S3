@@ -12,6 +12,7 @@ Type at the prompt to press "buttons":
   r      cycle remote setting (off/on/auto)           ls show state
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -177,8 +178,9 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
-            return self.reply({"ok": True, "fw": "0.5.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
-                               "auth": bool(TOKEN)})
+            hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
+            return self.reply({"ok": True, "fw": "0.6.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+                               "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")
         if p == "/setup":

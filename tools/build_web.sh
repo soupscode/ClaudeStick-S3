@@ -30,7 +30,15 @@ m = json.load(open(p)); m["version"] = v
 json.dump(m, open(p, "w"), indent=2); open(p, "a").write("\n")
 app = "firmware/claudestick-app.bin"
 sha = hashlib.sha256(open("web/" + app, "rb").read()).hexdigest()
-json.dump({"version": v, "app": app, "sha256": sha}, open("web/ota.json", "w"), indent=2)
+# Changelog bullets for this version (shown on the Stick's update prompt).
+notes, grab = [], False
+for line in open("CHANGELOG.md", encoding="utf-8"):
+    if line.startswith("## "):
+        grab = line[3:].strip() == v
+        continue
+    if grab and line.strip():
+        notes.append(line.rstrip())
+json.dump({"version": v, "app": app, "sha256": sha, "notes": "\n".join(notes)}, open("web/ota.json", "w"), indent=2)
 PY
 ls -la web/firmware/claudestick.bin
 echo "web flasher ready for firmware $VERSION"

@@ -29,7 +29,15 @@ jobs:
           path: ~/.platformio
           key: pio-${{ hashFiles('firmware/platformio.ini') }}
       - run: pip install platformio "esptool<5"
-      - run: ./tools/build_web.sh
+      - name: Build firmware + web flasher
+        # On failure, surface the tail of the build output as an annotation (readable via the API/UI summary).
+        run: |
+          set -o pipefail
+          ./tools/build_web.sh 2>&1 | tee build.log || {
+            msg=$(tail -n 60 build.log | sed 's/%/%25/g; s/\r//g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=build failed::$msg"
+            exit 1
+          }
         env:
           # Bake the Pages URL in so the Stick's settings page can update itself.
           CS_UPDATE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/

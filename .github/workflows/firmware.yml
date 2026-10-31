@@ -46,7 +46,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install playwright && python -m playwright install --with-deps chromium
-      - run: tests/run_all.sh --browser-only
+      - name: Tests (browser)
+        # On failure, surface the tail of the test output as an annotation (readable via the API/UI summary).
+        run: |
+          set -o pipefail
+          tests/run_all.sh --browser-only 2>&1 | tee browser.log || {
+            msg=$(tail -n 80 browser.log | sed 's/%/%25/g; s/\r//g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=browser tests failed::$msg"
+            exit 1
+          }
 
   build:
     runs-on: ubuntu-latest

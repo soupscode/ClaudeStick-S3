@@ -59,7 +59,14 @@ def save_json(path, data):
     os.replace(tmp, path)
 
 
-def strip_ours(settings):
+def strip_ours(settings, cfg=None):
+    sl = settings.get("statusLine")
+    if isinstance(sl, dict) and MARK in sl.get("command", ""):   # put back the status line we replaced
+        chain = (cfg or {}).get("statusline_chain")
+        if chain:
+            settings["statusLine"] = {**sl, "command": chain}
+        else:
+            settings.pop("statusLine", None)
     hooks = settings.get("hooks", {})
     for event in list(hooks):
         groups = []
@@ -123,7 +130,7 @@ def install(args):
     # Local config only holds how to reach the Stick; macros, waits and alerts live on
     # the Stick (settings page) and are fetched by the hook.
     cfg = load_json(CONFIG, None) or {}
-    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env")}
+    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env", "statusline_chain")}
     cfg.setdefault("port", 7880)
     for k in ("host", "token", "port"):
         v = getattr(args, k)
@@ -133,7 +140,8 @@ def install(args):
     print(f"config  -> {CONFIG}")
 
     cmd = f'"{sys.executable}" "{HOOK_DST}"'
-    settings = strip_ours(load_json(SETTINGS, {}))
+    settings = strip_ours(load_json(SETTINGS, {}), cfg)   # a re-run starts from your original status line
+    cfg.pop("statusline_chain", None)
     hooks = settings.setdefault("hooks", {})
 
     def add(event, timeout):
@@ -159,6 +167,22 @@ def install(args):
         print(f"env     -> {TODO_ENV}=1 (to-do list on the Stick; --no-todo-tools to skip)")
     if not env:
         settings.pop("env", None)
+
+    # Plan limits and context % only reach a status-line command, so the Stick's usage strip needs one.
+    # An existing status line is kept: ours runs it and prints its output unchanged.
+    status_cmd = cmd + " --statusline"
+    cur = settings.get("statusLine")
+    if args.no_statusline:
+        pass
+    elif isinstance(cur, dict) and cur.get("command"):
+        cfg["statusline_chain"] = cur["command"]
+        settings["statusLine"] = {**cur, "command": status_cmd}
+        print("status  -> wraps your existing status line (usage limits go to the Stick)")
+    elif cur:
+        print("status  -> your statusLine isn't a command; left alone (no usage limits on the Stick)")
+    else:
+        settings["statusLine"] = {"type": "command", "command": status_cmd}
+        print("status  -> added a small status line (ctx / 5h / 7d); --no-status-line to skip")
     save_json(CONFIG, cfg)
 
     backup_settings()
@@ -170,12 +194,15 @@ def install(args):
 def uninstall(_args):
     if os.path.exists(SETTINGS):
         backup_settings()
-        settings = strip_ours(load_json(SETTINGS, {}))
-        if (load_json(CONFIG, {}) or {}).get("added_todo_env"):
+        local = load_json(CONFIG, {}) or {}
+        settings = strip_ours(load_json(SETTINGS, {}), local)
+        if local.get("added_todo_env"):
             settings.get("env", {}).pop(TODO_ENV, None)
             if not settings.get("env"):
                 settings.pop("env", None)
         save_json(SETTINGS, settings)
+        if local.pop("statusline_chain", None) is not None:   # restored above; don't keep a stale copy
+            save_json(CONFIG, local)
         print("removed ClaudeStick hooks from Claude Code settings")
     print(f"left {HOME_DIR} in place (delete it to remove your config/macros)")
 
@@ -211,6 +238,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="device IP or hostname (default claudestick.local)")
     p.add_argument("--token", help="token shown on the device (menu > info)")
+    p.add_argument("--no-statusline", "--no-status-line", dest="no_statusline", action="store_true",
+                   help="don't touch the status line (the Stick then can't show plan limits)")
     p.add_argument("--no-todo-tools", action="store_true",
                    help=f"don't set {TODO_ENV}=1 (the Stick's to-do view stays empty on newer models)")
     p.add_argument("--port", type=int)
@@ -229,7 +258,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
-#define EMBED_HOOK_SHA "c871ae6f5991f04c545a218d407357c997b1ace4607cb440b8421c4411934a57"
+#define EMBED_HOOK_SHA "76597cc1bd96d820c24301f994dcf0b421a646cd1060182a46805ddb932f4319"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -254,6 +283,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -273,6 +303,7 @@ DISCOVER_BACKOFF_S = 120
 DEVICE_CFG_TTL_S = 60
 POLL_S = 0.4
 USAGE_EVERY_S = 20          # PostToolUse sends token totals at most this often
+STATUS_EVERY_S = 3          # the status line forwards limits at most this often (per session)
 TODO_MAX = 12
 
 DEFAULT_MACROS = [
@@ -1239,7 +1270,98 @@ def on_event(dev, ev, cfg):
 SLOW_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"}
 
 
+# ------------------------------------------------------------------ status line
+# Claude Code hands its status-line command a JSON blob (context %, plan limits, cost, model)
+# that hooks never see. `claudestick_hook.py --statusline` forwards the useful parts to the
+# Stick, then runs whatever status line you had before (the installer remembers it) so
+# nothing changes in your terminal.
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_from_statusline(d):
+    cw = d.get("context_window") or {}
+    rl = d.get("rate_limits") or {}
+    out = {}
+    pct = _num(cw.get("used_percentage"))
+    if pct is not None:
+        out["ctx_pct"] = round(pct, 1)
+    size = _num(cw.get("context_window_size"))
+    if size:
+        out["ctx_size"] = int(size)
+    cost = _num((d.get("cost") or {}).get("total_cost_usd"))
+    if cost is not None:
+        out["cost"] = round(cost, 2)
+    m = d.get("model") or {}
+    name = m.get("display_name") or m.get("id")
+    if name:
+        out["model"] = str(name)[:24]
+    for key, short in (("five_hour", "five"), ("seven_day", "seven")):   # Pro/Max only, may be absent
+        w = rl.get(key) or {}
+        p = _num(w.get("used_percentage"))
+        if p is not None:
+            out[short] = {"pct": round(p, 1), "resets": int(_num(w.get("resets_at")) or 0)}
+    return out
+
+
+def forward_usage(cfg, d, usage):
+    session = d.get("session_id") or ""
+    stamp = os.path.join(TMP, "claudestick-status-%s-%s" % (UID, re.sub(r"[^A-Za-z0-9_-]", "_", session)[:40]))
+    if _recent(stamp, STATUS_EVERY_S):
+        return
+    _touch(stamp)
+    cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or ""
+    body = base_body({"session_id": session, "cwd": cwd})
+    Device(cfg).call("POST", "/usage", {**body, **usage}, timeout=0.8)
+
+
+def default_status_line(usage):
+    parts = []
+    if "ctx_pct" in usage:
+        parts.append("ctx %d%%" % round(usage["ctx_pct"]))
+    if "five" in usage:
+        parts.append("5h %d%%" % round(usage["five"]["pct"]))
+    if "seven" in usage:
+        parts.append("7d %d%%" % round(usage["seven"]["pct"]))
+    return " | ".join(parts)
+
+
+def statusline_main():
+    raw = sys.stdin.read()
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    cfg = load_config()
+    usage = usage_from_statusline(d)
+    worker = None
+    if usage and not device_down():
+        worker = threading.Thread(target=forward_usage, args=(cfg, d, usage), daemon=True)
+        worker.start()
+    chain = cfg.get("statusline_chain")
+    out = ""
+    if chain:   # your previous status line keeps working exactly as before
+        try:
+            r = subprocess.run(chain, shell=True, input=raw, capture_output=True, text=True, timeout=5)
+            out = r.stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+    else:
+        out = default_status_line(usage)
+    if worker:
+        worker.join(1.2)
+    sys.stdout.write(out)
+
+
 def main():
+    if "--statusline" in sys.argv:
+        return statusline_main()
     if os.environ.get("CLAUDESTICK", "1") == "0":
         return
     try:

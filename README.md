@@ -24,13 +24,13 @@ The mode switch reaches Claude at the next hook (tool result, prompt, or Done-me
 
 ## Screen and buttons
 
-The UI is a little terminal pane: one of Anthropic's 18 animated ASCII buddies on the left (from claude-desktop-buddy), content on the right, and key hints on the bottom border. The buddy reacts: busy while Claude works, attention when it needs you, a celebration when it finishes, dizzy on errors, hearts when you approve. Pick a species from the menu. Previews are in `docs/screens.png`, `docs/screens-v0.7.png` and `docs/buddies.png`.
+The UI is a little terminal pane. Content uses the full width, with a small buddy face in the top-right corner and key hints on the bottom border. The face reacts: `(v.v)` busy while Claude works, `(O.O)` when it needs you, `(^o^)` when it finishes, `(@.@)` on errors, hearts when you approve, and a tiny mood word under it. When nothing is going on (no sessions), the Stick shows the full-size species buddy instead, one of Anthropic's 18 animated ASCII buddies (from claude-desktop-buddy). **Menu → buddy** opens a picker. Previews are in `docs/screens-v0.8.png`, `docs/screens-v0.7.png` and `docs/buddies.png`.
 
 Reading the screen:
 
 - **Top bar:** title tab on the left; Wi-Fi bars, Bluetooth (blue when connected), battery gauge (green while charging) and the clock on the right.
 - **Bottom bar:** the buttons that do something right now, drawn as key caps.
-- **Home:** a spinner and elapsed time (`tool 12s`) on working sessions, `done 3m` once finished, the to-do progress, and today's tokens along the bottom.
+- **Home:** a spinner and elapsed time (`tool 12s`) on working sessions, `done 3m` once finished, the to-do progress, and the usage strip along the bottom: context of the focused session and your 5-hour and 7-day plan limits (see below).
 - **Cards:** shell commands start with a green `$` and wrap with a hanging indent (long paths break after `/`, `_`, `-`). A **red border** means danger.
 - **Text:** the Stick's font is ASCII only, so smart quotes, accents and emoji are shown as plain equivalents (`'`, `e`, `?`). What Claude receives back is never altered.
 
@@ -66,7 +66,7 @@ On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
 
   Edit approvals show a red/green diff.
 - **Tilt to scroll:** tip the Stick forward or back on long commands. Use the serial command `tilt flip` or `tilt off` if it feels wrong.
-- **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy · text style (code/classic) · clock (12/24-hour) · button help · info · new token (hold A) · re-run setup.
+- **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy (picker) · text style (code/classic) · clock (12/24-hour) · button help · info · new token (hold A) · re-run setup.
 - **Wi-Fi bars:** 4 bars at -55 dBm or better, 3 to -65, 2 to -75, otherwise 1 (red below -82). The reading is sampled once a second and smoothed, and bars change with a little hysteresis so they don't flicker. **Menu → info** shows the dBm.
 - **Text style:** *code* (default) keeps the same 6x8 cell as *classic* but has a slashed zero, distinct `1`/`l`/`I` and cleaner punctuation. The art is in `tools/gen_font.py`.
 
@@ -79,6 +79,17 @@ Tap A on Home to see the focused session:
 - **Plan done:** when Claude ticks off its last to-do, the Stick chimes and the buddy celebrates; in remote mode you also get a phone push (ntfy).
 
 Claude only keeps a to-do list when its to-do tools are loaded, and newer Claude models don't load them by default. The installer sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in `~/.claude/settings.json` for you unless you already set it either way. Pass `--no-todo-tools` to skip that; uninstall removes it only if the installer added it. Tokens work either way: the hook reads them from the session transcript.
+
+### Usage and plan limits
+
+The strip along the bottom of Home and Session details reads `ctx 42%  5h 63%  7d 28%`: how full the focused session's context is, then how much of your 5-hour and 7-day plan windows you've used (green, amber over 70%, red over 90%). Session details also shows the reset countdowns (`5h 63% 2h14m`), the session cost, and the model.
+
+These numbers only exist in Claude Code's *status line* data, which hooks never see, so the installer sets a small status-line command:
+
+- If you **already have a status line**, it is kept: the installer wraps it, runs it with the same input, and prints its output unchanged. **Uninstall restores it.**
+- If you don't, the installer adds one that prints `ctx 42% | 5h 63% | 7d 28%`.
+- `--no-statusline` skips all of this (the Stick then shows tokens only).
+- Plan limits are Pro/Max only and appear after the first response; API-key users get context % and cost but no limits. Limits are account-wide, so any session updates them; they dim when no session has reported for 15 minutes. If the Stick's clock isn't set, reset countdowns are hidden.
 
 ### Push-to-talk
 
@@ -206,6 +217,7 @@ python3 install.py --host 127.0.0.1 --token test123
 
 ## Notes / limits
 
+- `firmware/src/tinyfont.h` is derived from the 3x5 "Tom Thumb" font (BSD 3-clause, license reproduced in the file) and is used for the mood word in the corner. Regenerate with `tools/gen_tinyfont.py`.
 - Macros, Stop, questions and remote mode only apply to CLI (hook) sessions. The desktop Bluetooth protocol only allows approve/deny.
 - Claude following the remote-mode style (questions, `Options:` line) is an instruction, not a guarantee. If it skips the line, the Done menu just shows your macros.
 - Desktop folder-push (custom GIF pets) isn't supported. The desktop will report that the device declined.

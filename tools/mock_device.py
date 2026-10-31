@@ -182,7 +182,7 @@ class H(BaseHTTPRequestHandler):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
             hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
-            return self.reply({"ok": True, "fw": "0.7.2", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+            return self.reply({"ok": True, "fw": "0.8.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
                                "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")
@@ -195,7 +195,7 @@ class H(BaseHTTPRequestHandler):
             if not self.setup_auth():
                 return
             if p == "/setup/info":
-                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.7.2", "port": self.server.server_port,
+                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.8.0", "port": self.server.server_port,
                                    "tz": SETUP["tz"], "tz_name": SETUP["tz_name"], "clock24": SETUP["clock24"],
                                    "clock": SETUP.get("clock", ""), "font": SETUP["font"],
                                    "wifi": {"ssid": SETUP["ssid"], "connected": SETUP["connected"], "ip": SETUP["ip"]},
@@ -216,10 +216,13 @@ class H(BaseHTTPRequestHandler):
                     "remote": remote_now(), "remote_setting": CONF["remote"], "pinned": S["pinned"],
                     "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"],
                                   **({"todo": v["todo"]} if v.get("todo", {}).get("total") else {}),
-                                  **({"usage": v["usage"]} if v.get("usage") else {})}
+                                  **({"usage": v["usage"]} if v.get("usage") else {}),
+                                  **({"ctx_pct": v["u_ctx_pct"]} if "u_ctx_pct" in v else {}),
+                                  **({"model_name": v["u_model"]} if "u_model" in v else {})}
                                  for k, v in S["sessions"].items()],
                     "tokens_today": sum(t for (sid, day), t in S.setdefault("ledger", {}).items()
                                         if day == S.get("day")),
+                    **({"limits": S["limits"]} if S.get("limits") else {}),
                     "approvals": [{"id": i, "tool": a["tool"], "detail": a["detail"], "project": a["project"], "src": "wifi",
                                    "always": a.get("always", ""), "risk": a.get("risk", ""), "risk_why": a.get("risk_why", "")}
                                   for i, a in S["approvals"].items() if a["decision"] == "pending"],
@@ -344,6 +347,17 @@ class H(BaseHTTPRequestHandler):
                 elif b.get("can_inject") and s["inject"]:
                     out["inject"], s["inject"] = s["inject"], ""
                 return self.reply(out)
+            if p == "/usage":
+                S.setdefault("limits", {})
+                for k in ("five", "seven"):
+                    if isinstance(b.get(k), dict):
+                        S["limits"][k] = {"pct": b[k].get("pct"), "resets": b[k].get("resets", 0)}
+                s2 = S["sessions"].get(sid)
+                if s2 is not None:
+                    for k in ("ctx_pct", "cost", "model"):
+                        if k in b:
+                            s2["u_" + k] = b[k]
+                return self.reply({"ok": True})
             if p == "/permission":
                 i = nid()
                 risk = b.get("risk", "")

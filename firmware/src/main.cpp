@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.7.2";
+static const char*    FW_VERSION   = "0.8.0";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -80,7 +80,14 @@ struct Session {
   uint32_t tokIn = 0, tokOut = 0, tokCR = 0, tokCW = 0, ctx = 0;
   String   model;
   bool     hasUsage = false;
+  // from Claude Code's status line (see the hook's --statusline)
+  float    ctxPct = -1, cost = -1;
+  String   modelName;
 };
+
+// Plan limits are account-wide: the 5-hour and 7-day windows (Pro/Max), with reset times.
+struct Limit { float pct = -1; uint32_t resets = 0; };
+static struct { Limit five, seven; uint32_t at = 0; bool set = false; } lim;
 
 // Tokens per session per day, kept after a session ends so "today" stays right.
 struct DayTok { String sid, day; uint32_t tok = 0; };
@@ -165,7 +172,7 @@ static bool        clock24 = false;    // false = 12-hour "8:59p"
 static bool        ntpStarted = false;
 static uint8_t     textStyle = 1;       // 0 = classic 6x8, 1 = "code" (same cell, cleaner shapes; see tools/gen_font.py)
 
-enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST, SCR_DETAIL };
+enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST, SCR_DETAIL, SCR_PET };
 static Screen   screen = SCR_HOME;
 static int      menuIdx = 0, focusSession = -1;
 static uint32_t lastActivity = 0, lastBeep = 0, lastDraw = 0;
@@ -655,6 +662,30 @@ static void hEvent() {
   if (ev == "done" || ev == "waiting") touch();
 }
 
+// POST /usage {session, ctx_pct?, ctx_size?, cost?, model?, five?:{pct,resets}, seven?:{pct,resets}}
+// Sent by the hook's status-line mode. Limits are account-wide; the rest belongs to one session.
+static void hUsage() {
+  if (!authed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  String sid = in["session"] | "";
+  Session* s = sid.length() ? findSession(sid, false) : nullptr;   // never creates a session
+  if (s) {
+    if (in["ctx_pct"].is<float>()) s->ctxPct = in["ctx_pct"];
+    if (in["cost"].is<float>()) s->cost = in["cost"];
+    if (in["model"].is<const char*>()) s->modelName = in["model"].as<const char*>();
+  }
+  bool any = false;
+  auto take = [&](const char* k, Limit& l) {
+    if (!in[k].is<JsonObject>()) return;
+    l.pct = in[k]["pct"] | -1.0f; l.resets = in[k]["resets"] | 0UL; any = true;
+  };
+  take("five", lim.five); take("seven", lim.seven);
+  if (any) { lim.at = millis(); lim.set = true; }
+  if (!clockOk() && in["now"].is<long>()) setClock(in["now"].as<long>(), in["tz"] | 0L);
+  JsonDocument out; out["ok"] = true; sendJson(out);
+  dirty = true;
+}
+
 // POST /permission {session, project, tool, detail} -> {"id":N}
 static void hPermissionNew() {
   if (!authed()) return;
@@ -779,17 +810,17 @@ async function act(b){await api('/act',b);load()}
 function dn(id){const t=prompt('Tell Claude why not (it gets this message):');if(t!==null)act({action:'deny',id,text:t})}
 const K=n=>n<1e4?String(n):n<1e6?(n/1e3).toFixed(n<1e5?1:0)+'k':(n/1e6).toFixed(2)+'M';
 const todo=t=>!t?'':`<div class=bar><i style="width:${100*t.done/Math.max(1,t.total)}%"></i></div><details${t.now?' open':''}><summary>${t.done}/${t.total} ${e(t.now||'')}</summary>${t.items.map(i=>`<div class="td ${i[0]}">${i[0]=='c'?'&#10003;':i[0]=='i'?'&#9656;':'&middot;'} ${e(i[1])}</div>`).join('')}</details>`;
-const use=u=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cr+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache ${K(u.cr+u.cw)}) &middot; context ${K(u.ctx)}${u.model?' &middot; '+e(u.model):''}</div>`;
+const use=(u,s)=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cr+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache ${K(u.cr+u.cw)}) &middot; context ${s.ctx_pct!=null?Math.round(s.ctx_pct)+'%':K(u.ctx)}${s.model_name?' &middot; '+e(s.model_name):u.model?' &middot; '+e(u.model):''}</div>`;
 function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
 async function load(){try{S=await api('/state')}catch(x){return}
-ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';tk.textContent=S.tokens_today?K(S.tokens_today)+' tok today':'';rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
+ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';const L=S.limits||{};tk.textContent=[L.five?'5h '+Math.round(L.five.pct)+'%':'',L.seven?'7d '+Math.round(L.seven.pct)+'%':'',S.tokens_today?K(S.tokens_today)+' tok today':''].filter(Boolean).join(' \u00b7 ');rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
 const diff=t=>e(t).split('\n').map(l=>l.startsWith('+ ')?`<span class=add>${l}</span>`:l.startsWith('- ')?`<span class=del>${l}</span>`:l).join('\n');
 ap.innerHTML=(S.approvals||[]).map(a=>`<div class="c ${a.risk=='high'?'risk':''}"><div class=t>${a.risk=='high'?'<span class=rk>DANGER</span> ':''}Approve? ${e(a.tool)} <span class=d>${e(a.project)}</span></div>${a.risk_why?`<div class=rk>${e(a.risk_why)}</div>`:''}<pre>${diff(a.detail)}</pre>
 <button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button class=no onclick="dn(${a.id})">Deny + note</button><button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
 ch.innerHTML=(S.choices||[]).map(c=>`<div class=c><div class=t>${c.kind=='question'?'Question':'Done'} <span class=d>${e(c.project)}</span></div><div class=d>${e(c.title||c.last)}</div>
 ${c.options.map((o,i)=>`<button class=ac onclick="act({action:'choose',id:${c.id},index:${i}})">${e(o)}</button>`).join('')}<button onclick="act({action:'dismiss',id:${c.id}})">Dismiss</button></div>`).join('');
 const v=sel.value;sel.innerHTML=(S.sessions||[]).map(s=>`<option value="${e(s.id)}">${e(s.project)} (${e(s.state)})</option>`).join('');if(v)sel.value=v;
-ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div>${todo(s.todo)}${use(s.usage)}</div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
+ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div>${todo(s.todo)}${use(s.usage,s)}</div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
 mc.innerHTML=(S.macros||[]).map((m,i)=>`<button onclick="act({action:'macro',session:sel.value,index:${i}})">${e(m)}</button>`).join('')}
 load();setInterval(load,2000)</script></body></html>)HTML";
 
@@ -816,12 +847,20 @@ static void hState() {
       JsonArray it = t["items"].to<JsonArray>();
       for (int i = 0; i < s.nTodo; i++) { JsonArray e = it.add<JsonArray>(); e.add(String(s.todo[i].st)); e.add(s.todo[i].text); }
     }
+    if (s.ctxPct >= 0) o["ctx_pct"] = s.ctxPct;
+    if (s.modelName.length()) o["model_name"] = s.modelName;
     if (s.hasUsage) {
       JsonObject u = o["usage"].to<JsonObject>();
       u["in"] = s.tokIn; u["out"] = s.tokOut; u["cr"] = s.tokCR; u["cw"] = s.tokCW; u["ctx"] = s.ctx; u["model"] = s.model;
     }
   }
   out["tokens_today"] = tokensToday();
+  if (lim.five.pct >= 0 || lim.seven.pct >= 0) {
+    JsonObject l = out["limits"].to<JsonObject>();
+    if (lim.five.pct >= 0) { l["five"]["pct"] = lim.five.pct; l["five"]["resets"] = lim.five.resets; }
+    if (lim.seven.pct >= 0) { l["seven"]["pct"] = lim.seven.pct; l["seven"]["resets"] = lim.seven.resets; }
+    l["age_s"] = (millis() - lim.at) / 1000;
+  }
   JsonArray as = out["approvals"].to<JsonArray>();
   for (auto& a : approvals) if (a.used && a.decision == D_PENDING) {
     JsonObject o = as.add<JsonObject>();
@@ -978,6 +1017,7 @@ static void startHttp() {
   server.on("/act", HTTP_POST, hAct);
   server.on("/health", HTTP_GET, hHealth);
   server.on("/event", HTTP_POST, hEvent);
+  server.on("/usage", HTTP_POST, hUsage);
   server.on("/permission", HTTP_POST, hPermissionNew);
   server.on("/permission", HTTP_GET, hPermissionPoll);
   server.on("/permission", HTTP_DELETE, hPermissionPoll);
@@ -1408,10 +1448,23 @@ static const uint16_t C_YEL    = 0xF6A8;   // amber
 static const uint16_t C_BADDIM = 0xA0E3;   // dark red (danger border)
 
 static const int W = 240, H = 135;
-static const int LEFT_W = 86;                 // buddy pane width
-static const int PANE_X = LEFT_W + 4;             // right pane text x
-static const int PANE_W = W - PANE_X - 4;             // right pane width (24 chars)
-static const int PANE_CHARS = PANE_W / 6;
+// Two layouts. Normal: full-width content with a small buddy face in the top-right corner.
+// Pet: the big species buddy in a left pane (idle home, buddy picker, first-time setup).
+static const int LEFT_W = 86;                 // pet layout: buddy pane width
+static const int CORNER_X = 203, CORNER_Y = 12;   // normal layout: mini face
+static const int CORNER_ROWS_Y = 28;          // rows above this y share their line with the face
+static const int NARROW_CHARS = 31;           // characters that fit left of the face
+static bool petLayout = false;
+static int  PANE_X = 7, PANE_W = 229, PANE_CHARS = 38;   // content box, set by layout()
+static void layout(bool pet) {
+  petLayout = pet;
+  PANE_X = pet ? LEFT_W + 4 : 7;
+  PANE_W = W - PANE_X - 4;
+  PANE_CHARS = PANE_W / 6;
+}
+// Right edge for text on a row at y (stays clear of the corner face).
+static int rightX(int y) { return (petLayout || y >= CORNER_ROWS_Y) ? W - 6 : PANE_X + NARROW_CHARS * 6; }
+static int charsAt(int y) { return (rightX(y) - PANE_X) / 6; }
 static const int TOP = 11, BOTTOM = 123, LINE_H = 9;
 static const int MAX_ITEMS = MAX_CHOICES + 12;
 static const int MAX_WRAP = 64;
@@ -1560,7 +1613,7 @@ static int richText(const String& s, int x, int y, uint16_t fg, bool paint = tru
 // Frame with a title tab on the top border and key hints (as key caps) on the bottom border.
 static void frame(const String& title, uint16_t accent, const String& hints, uint16_t border = C_FRAME) {
   spr.drawRoundRect(0, 4, W, H - 4, 3, border);
-  spr.drawFastVLine(LEFT_W, 5, H - 7, border);
+  if (petLayout) spr.drawFastVLine(LEFT_W, 5, H - 7, border);
   txt(" " + title + " ", 6, 0, accent);
   int sw = statusBar(false);
   spr.fillRect(W - 5 - sw - 3, 0, sw + 6, 9, C_BG);
@@ -1572,7 +1625,52 @@ static void frame(const String& title, uint16_t accent, const String& hints, uin
   }
 }
 
-// Left pane: buddy, its name, and a one-word mood.
+// ---- tiny 3x5 text (mood word in the corner)
+#include "tinyfont.h"
+static int tinyWidth(const String& t) { return t.length() * 4; }
+static int drawTiny(const String& t, int x, int y, uint16_t c) {
+  int x0 = x;
+  for (size_t i = 0; i < t.length(); i++) {
+    int ch = (unsigned char)t[i];
+    if (ch >= 0x20 && ch <= 0x7E) {
+      const uint8_t* g = tinyfont_rows[ch - 0x20];
+      for (int r = 0; r < 7; r++)
+        for (int b = 0; b < 4; b++)
+          if (g[r] & (8 >> b)) spr.drawPixel(x + b, y + r, c);
+    }
+    x += 4;
+  }
+  return x - x0;
+}
+
+// Normal layout: a small face in the top-right corner with a tiny mood word under it.
+static void buddyCorner(uint8_t state, const char* mood, uint16_t moodColor) {
+  uint32_t t = millis() / 200;
+  const char* face = "(o.o)"; uint16_t c = C_CLAUDE; bool sparkle = false, heart = false;
+  switch (state) {
+    case B_SLEEP:     face = "(-.-)"; c = C_DIM; break;
+    case B_BUSY:      face = (t % 4 < 2) ? "(v.v)" : "(v_v)"; c = C_BLUE; break;
+    case B_ATTENTION: { uint32_t k = t % 6; face = k < 2 ? "(O.O)" : k < 4 ? "(o.O)" : "(O.o)"; } break;
+    case B_CELEBRATE: face = (t % 4 < 2) ? "(^o^)" : "(^O^)"; c = C_OK; sparkle = true; break;
+    case B_DIZZY:     face = (t % 4 < 2) ? "(@.@)" : "(@_@)"; c = C_BAD; break;
+    case B_HEART:     face = "(^.^)"; c = C_BAD; heart = true; break;
+    default:          face = (millis() % 4200 < 180) ? "(-.-)" : "(o.o)"; break;
+  }
+  txt(face, CORNER_X, CORNER_Y, c);
+  if (heart) {
+    static const uint8_t H5[4] = { 0x0A, 0x1F, 0x0E, 0x04 };
+    for (int r = 0; r < 4; r++) for (int b = 0; b < 5; b++) if (H5[r] & (16 >> b)) spr.drawPixel(CORNER_X - 8 + b, CORNER_Y + 1 + r, C_BAD);
+  }
+  if (sparkle && (t % 2)) {
+    spr.drawPixel(CORNER_X - 6, CORNER_Y + 2, C_YEL); spr.drawPixel(CORNER_X - 7, CORNER_Y + 3, C_YEL); spr.drawPixel(CORNER_X - 5, CORNER_Y + 3, C_YEL);
+    spr.drawPixel(CORNER_X - 6, CORNER_Y + 4, C_YEL);
+    spr.drawPixel(CORNER_X + 33, CORNER_Y, C_YEL); spr.drawPixel(CORNER_X + 32, CORNER_Y + 1, C_YEL); spr.drawPixel(CORNER_X + 34, CORNER_Y + 1, C_YEL);
+  }
+  String m = mood;
+  drawTiny(m, W - 6 - tinyWidth(m), CORNER_Y + 9, moodColor);
+}
+
+// Pet layout: the species buddy in the left pane, its name, and a one-word mood.
 static void buddyPane(uint8_t state, const char* mood, uint16_t moodColor) {
   spr.setFont(&fonts::Font0);     // the buddy art was drawn for the classic glyphs
   buddyDraw(state);
@@ -1588,7 +1686,7 @@ static int textBlock(const String& text, int y, int maxLines, uint16_t color, bo
   static String lines[MAX_WRAP];
   static uint16_t colors[MAX_WRAP];
   int indent = lead ? 2 : 0;   // shell-style hanging indent after a "$" prompt
-  int n = wrapLines(text, PANE_CHARS - indent, lines, MAX_WRAP, colors, color);
+  int n = wrapLines(text, charsAt(y) - indent, lines, MAX_WRAP, colors, color);
   int first = scrollable ? max(0, min(scrollLine, n - maxLines)) : 0;
   if (scrollable) scrollLine = first;
   int shown = 0;
@@ -1605,6 +1703,9 @@ static int textBlock(const String& text, int y, int maxLines, uint16_t color, bo
   }
   return shown;
 }
+
+// Horizontal rule that stops short of the corner face on the top rows.
+static void hrule(int y, uint16_t c = C_FRAME) { spr.drawFastHLine(PANE_X, y, rightX(y) - PANE_X - 2, c); }
 
 // Selectable list in the right pane starting at y.
 static void listBlock(const String* labels, int n, int y, uint16_t accent, const String* marks = nullptr) {
@@ -1690,6 +1791,49 @@ static String fmtTok(uint32_t n) {
   return b;
 }
 
+static String fmtReset(uint32_t resets) {
+  if (!resets || !clockOk()) return "";
+  long d = (long)resets - (long)time(nullptr);
+  if (d <= 0) return "now";
+  if (d < 3600) return String(d / 60) + "m";
+  if (d < 86400) return String(d / 3600) + "h" + String((d % 3600) / 60) + "m";
+  return String(d / 86400) + "d" + String((d % 86400) / 3600) + "h";
+}
+// -1 = unknown. A window that has already reset is back at 0.
+static float limitPct(const Limit& l) {
+  if (l.pct < 0) return -1;
+  if (l.resets && clockOk() && (long)time(nullptr) >= (long)l.resets) return 0;
+  return l.pct;
+}
+static bool limitsStale() { return !lim.set || millis() - lim.at > 15UL * 60 * 1000; }
+static uint16_t pctColor(float p) { return p >= 90 ? C_BAD : p >= 70 ? C_YEL : C_OK; }
+static bool haveUsage() {
+  Session* t = targetSession();
+  return limitPct(lim.five) >= 0 || limitPct(lim.seven) >= 0 || tokensToday() || (t && (t->ctxPct >= 0 || t->hasUsage));
+}
+
+// One line along the bottom: context of the focused session, then the 5-hour and 7-day plan limits.
+static void usageStrip(int y) {
+  Session* t = targetSession();
+  bool stale = limitsStale();
+  int x = PANE_X;
+  auto seg = [&](const char* label, float pct, bool dimIt) {
+    String p = String((int)(pct + 0.5f)) + "%";
+    txt(label, x, y, C_DIM); x += spr.textWidth(label) + 3;
+    spr.drawRect(x, y + 1, 22, 6, C_FRAME);
+    int w = (int)(20 * max(0.0f, min(100.0f, pct)) / 100.0f + 0.5f);
+    if (w > 0) spr.fillRect(x + 1, y + 2, w, 4, dimIt ? C_DIM : pctColor(pct));
+    x += 25;
+    txt(p, x, y, dimIt ? C_DIM : C_FG); x += spr.textWidth(p) + 8;
+  };
+  if (t && t->ctxPct >= 0) seg("ctx", t->ctxPct, false);
+  else if (t && t->hasUsage) { String c = "ctx " + fmtTok(t->ctx); txt(c, x, y, C_DIM); x += spr.textWidth(c) + 8; }
+  float f = limitPct(lim.five), sv = limitPct(lim.seven);
+  if (f >= 0) seg("5h", f, stale);
+  if (sv >= 0) seg("7d", sv, stale);
+  if (f < 0 && sv < 0 && tokensToday()) txt(fmtTok(tokensToday()) + " today", x, y, C_DIM);
+}
+
 static void drawApproval(Approval* a) {
   bool risky = a->risk == "high";
   String hint = risky ? "[2xA] allow  [B] deny" : a->always.length() ? "[A] ok  [2xA] always  [B] no" : "[A] allow  [B] deny";
@@ -1698,15 +1842,16 @@ static void drawApproval(Approval* a) {
   int y = TOP + 2;
   String tool = fit(a->tool, 12);
   txt(tool, PANE_X, y, risky ? C_BAD : C_CLAUDE);
-  String proj = fit(a->project, PANE_CHARS - (int)tool.length() - 1);
-  txt(proj, W - 6 - spr.textWidth(proj), y, C_DIM); y += LINE_H;
-  if (risky && a->riskWhy.length()) { txt(fit(a->riskWhy, PANE_CHARS), PANE_X, y, C_BAD); y += LINE_H; }
-  spr.drawFastHLine(PANE_X, y, PANE_W - 6, risky ? C_BADDIM : C_FRAME);
-  int rows = (BOTTOM - (y + 4)) / LINE_H - (a->src == SRC_WIFI ? 1 : 0);
-  textBlock(a->detail, y + 4, rows, C_FG, true, a->tool == "Bash" ? "$" : nullptr);
+  String proj = fit(a->project, charsAt(y) - (int)tool.length() - 1);
+  txt(proj, rightX(y) - spr.textWidth(proj), y, C_DIM); y += LINE_H;
+  if (risky && a->riskWhy.length()) { txt(fit(a->riskWhy, charsAt(y)), PANE_X, y, C_BAD); y += LINE_H; }
+  hrule(y, risky ? C_BADDIM : C_FRAME);
+  y = max(y + 4, petLayout ? 0 : CORNER_ROWS_Y);
+  int rows = (BOTTOM - y) / LINE_H - (a->src == SRC_WIFI ? 1 : 0);
+  textBlock(a->detail, y, rows, C_FG, true, a->tool == "Bash" ? "$" : nullptr);
   String foot = millis() < holdHintUntil ? "double-press A to allow" :
                 a->always.length() ? "2xA: " + a->always : a->src == SRC_WIFI ? "hold B: at keyboard" : "";
-  if (foot.length()) txt(fit(foot, PANE_CHARS), PANE_X, BOTTOM - LINE_H + 2, millis() < holdHintUntil ? C_YEL : C_DIM);
+  if (foot.length()) txt(fit(foot, PANE_CHARS - 4), PANE_X, BOTTOM - LINE_H + 2, millis() < holdHintUntil ? C_YEL : C_DIM);
   int pending = 0;
   for (auto& x : approvals) if (x.used && x.decision == D_PENDING) pending++;
   if (pending > 1) { String q = " +" + String(pending - 1) + " "; txt(q, W - 6 - spr.textWidth(q), H - 8, C_YEL); }
@@ -1722,10 +1867,10 @@ static int choiceLabels(StopReq* r, String* out) {
 static void drawChoice(StopReq* r) {
   bool q = r->kind == "question";
   frame(q ? "question" : "done > next?", q ? C_CLAUDE : C_OK, "[B] next  [A] pick  [hold A] talk");
-  txt("@" + fit(r->project, PANE_CHARS - 1), PANE_X, TOP + 2, C_DIM);
+  txt("@" + fit(r->project, charsAt(TOP + 2) - 1), PANE_X, TOP + 2, C_DIM);
   int used = textBlock(q ? r->title : r->last, TOP + 2 + LINE_H, q ? 4 : 3, q ? C_FG : C_DIM, true);
-  int y = TOP + 6 + (used + 1) * LINE_H;
-  spr.drawFastHLine(PANE_X, y - 4, PANE_W - 6, C_FRAME);
+  int y = max(TOP + 6 + (used + 1) * LINE_H, petLayout ? 0 : CORNER_ROWS_Y + 4);
+  hrule(y - 4);
   String labels[MAX_ITEMS];
   int n = choiceLabels(r, labels);
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
@@ -1758,10 +1903,10 @@ static int menuEntries(MenuEntry* e, String* labels) {
 static void drawActions() {
   Session* s = targetSession();
   frame("menu", C_CLAUDE, "[B] next  [P] up  [A] ok");
-  txt(s ? ("-> " + fit(sessionLabel(*s), PANE_CHARS - 3)) : String("no cli session"), PANE_X, TOP + 2, C_DIM);
+  txt(s ? ("-> " + fit(sessionLabel(*s), charsAt(TOP + 2) - 3)) : String("no cli session"), PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS]; MenuEntry ents[MAX_ITEMS];
   int n = menuEntries(ents, labels);
-  listBlock(labels, n, TOP + 4 + LINE_H, C_CLAUDE);
+  listBlock(labels, n, max(TOP + 4 + LINE_H, petLayout ? 0 : CORNER_ROWS_Y), C_CLAUDE);
 }
 
 static void drawHelp() {
@@ -1812,7 +1957,7 @@ static int updateLabels(String* out) {
 static void drawUpdatePrompt() {
   frame("update available!", C_OK, "[B] next  [A] pick  [hold B] later");
   txt("v" + String(FW_VERSION) + " -> v" + upd.version, PANE_X, TOP + 2, C_OK);
-  spr.drawFastHLine(PANE_X, TOP + 2 + LINE_H, PANE_W - 6, C_FRAME);
+  hrule(TOP + 2 + LINE_H);
   String notes = upd.notes.length() ? "\n" + upd.notes : String("\n(no changelog)");
   notes.replace("\n- ", "\n* ");           // changelog bullets, not diff lines
   textBlock(notes.substring(1), TOP + 5 + LINE_H, 6, C_FG, true);
@@ -1821,6 +1966,7 @@ static void drawUpdatePrompt() {
 }
 
 static void drawUpdateProgress() {
+  layout(false);
   spr.fillScreen(C_BG); spr.setFont(uiFont()); spr.setTextSize(1);
   frame("updating", C_OK, "don't unplug");
   txt("v" + String(FW_VERSION) + " -> v" + upd.version, PANE_X, TOP + 4, C_FG);
@@ -1829,7 +1975,7 @@ static void drawUpdateProgress() {
   spr.fillRect(PANE_X + 1, TOP + 23, (PANE_W - 8) * p / 100, 8, C_OK);
   txt(String(p) + "%", PANE_X, TOP + 38, C_DIM);
   if (p >= 100) txt("restarting...", PANE_X, TOP + 50, C_OK);
-  buddyPane(p >= 100 ? B_CELEBRATE : B_BUSY, p >= 100 ? "done!" : "updating", C_OK);
+  buddyCorner(p >= 100 ? B_CELEBRATE : B_BUSY, p >= 100 ? "done!" : "updating", C_OK);
   spr.pushSprite(0, 0);
 }
 
@@ -1848,12 +1994,13 @@ static void drawVoiceCard() {
   Session* s = findSession(voiceTarget, false);
   frame(voiceApproval ? "deny + tell claude?" : voiceStopReq ? "reply?" : "send to claude?",
         voiceApproval ? C_BAD : C_CLAUDE, "[A] send  [B] discard  [hold A] redo");
-  txt("@" + fit(s ? sessionLabel(*s) : String("?"), PANE_CHARS - 1), PANE_X, TOP + 2, C_DIM);
-  spr.drawFastHLine(PANE_X, TOP + 2 + LINE_H, PANE_W - 6, C_FRAME);
+  txt("@" + fit(s ? sessionLabel(*s) : String("?"), charsAt(TOP + 2) - 1), PANE_X, TOP + 2, C_DIM);
+  hrule(TOP + 2 + LINE_H);
   textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H, 10, C_FG, true);
 }
 
 static void drawVoiceRec(uint32_t ms) {
+  layout(false);
   spr.fillScreen(C_BG);
   spr.setFont(uiFont()); spr.setTextSize(1);
   bool rec = voiceState == V_REC;
@@ -1868,7 +2015,7 @@ static void drawVoiceRec(uint32_t ms) {
     txt("sending audio to", PANE_X, TOP + 4, C_DIM);
     txt(fit(conf.sttUrl, PANE_CHARS), PANE_X, TOP + 4 + LINE_H, C_DIM);
   }
-  buddyPane(rec ? B_ATTENTION : B_BUSY, rec ? "listening" : "thinking", C_CLAUDE);
+  buddyCorner(rec ? B_ATTENTION : B_BUSY, rec ? "listening" : "thinking", C_CLAUDE);
   spr.pushSprite(0, 0);
 }
 
@@ -1883,12 +2030,24 @@ static int sessionItems(String* labels, String* marks, String* ids) {
   return n;
 }
 
+// Buddy picker: the full-size species. It also shows on the idle home screen.
+static void drawPet() {
+  frame("buddy", C_CLAUDE, "[B] next  [P] prev  [A] back");
+  int y = TOP + 6;
+  spr.setTextSize(2); txt(buddySpeciesName(), PANE_X, y, C_CLAUDE); spr.setTextSize(1);
+  y += 22;
+  txt(String(buddySpeciesIdx() + 1) + " of " + String(buddySpeciesCount()), PANE_X, y, C_DIM); y += LINE_H + 8;
+  txt("shows big when idle;", PANE_X, y, C_DIM); y += LINE_H;
+  txt("a small face in the", PANE_X, y, C_DIM); y += LINE_H;
+  txt("corner while you work.", PANE_X, y, C_DIM);
+}
+
 static void drawSessions() {
   frame("tie to session", C_BLUE, "[B] next  [P] up  [A] pin");
   txt("* = stick answers these", PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS], marks[MAX_ITEMS], ids[MAX_ITEMS];
   int n = sessionItems(labels, marks, ids);
-  listBlock(labels, n, TOP + 4 + LINE_H, C_BLUE, marks);
+  listBlock(labels, n, max(TOP + 4 + LINE_H, petLayout ? 0 : CORNER_ROWS_Y), C_BLUE, marks);
 }
 
 static void drawInfo() {
@@ -1907,10 +2066,17 @@ static void drawInfo() {
   kv("ip", WiFi.localIP().toString() + ":" + String(HTTP_PORT));
   kv("host", mdnsHost);
   kv("key", token, C_CLAUDE);
-  kv("taps", String(stats.appr) + " ok  " + String(stats.deny) + " no");
   String tk = fmtTok(tokensToday()) + " today";
   if (desk.lastBeat) tk += "  desk " + fmtTok(desk.tokensToday);
+  tk += "  ok " + String(stats.appr) + " no " + String(stats.deny);
   kv("tok", tk);
+  float f5 = limitPct(lim.five), f7 = limitPct(lim.seven);
+  if (f5 >= 0 || f7 >= 0) {
+    String L;
+    if (f5 >= 0) { L += "5h " + String((int)(f5 + 0.5f)) + "%"; String r = fmtReset(lim.five.resets); if (r.length()) L += " " + r; }
+    if (f7 >= 0) { if (L.length()) L += "  "; L += "7d " + String((int)(f7 + 0.5f)) + "%"; String r = fmtReset(lim.seven.resets); if (r.length()) L += " " + r; }
+    kv("lim", L, limitsStale() ? C_DIM : C_FG);
+  }
   kv("set", String("tilt ") + (tiltMode == 0 ? "off" : tiltMode > 0 ? "on" : "flip") + "  voice " + (conf.sttUrl.length() ? "on" : "off"), C_DIM);
   kv("rst", resetWhy + (safeMode ? "  SAFE" : ""), safeMode ? C_YEL : C_DIM);
 }
@@ -1965,18 +2131,30 @@ static void drawDetail() {
   if (!s) { txt("no claude session yet", PANE_X, TOP + 20, C_DIM); return; }
   int y = TOP + 2;
   String st = s->state;
-  txt(fit(sessionLabel(*s), PANE_CHARS - st.length() - 1), PANE_X, y, C_FG);
-  txt(st, W - 6 - spr.textWidth(st), y, stateColor(st));
+  txt(fit(sessionLabel(*s), charsAt(y) - (int)st.length() - 1), PANE_X, y, C_FG);
+  txt(st, rightX(y) - spr.textWidth(st), y, stateColor(st));
   y += LINE_H;
-  if (s->hasUsage) {
-    String u = "tok " + fmtTok(s->tokIn + s->tokOut + s->tokCR + s->tokCW) + "  ctx " + fmtTok(s->ctx);
-    txt(fit(u, PANE_CHARS), PANE_X, y, C_DIM); y += LINE_H;
+  String u;
+  if (s->hasUsage) u = "tok " + fmtTok(s->tokIn + s->tokOut + s->tokCR + s->tokCW);
+  if (s->ctxPct >= 0) u += (u.length() ? "  " : "") + String("ctx ") + String((int)(s->ctxPct + 0.5f)) + "%";
+  else if (s->hasUsage) u += "  ctx " + fmtTok(s->ctx);
+  if (s->cost >= 0) u += "  $" + String(s->cost, 2);
+  if (u.length()) { txt(fit(u, charsAt(y)), PANE_X, y, C_DIM); y += LINE_H; }
+  float f5 = limitPct(lim.five), f7 = limitPct(lim.seven);
+  if (f5 >= 0 || f7 >= 0) {
+    String L;
+    if (f5 >= 0) { L += "5h " + String((int)(f5 + 0.5f)) + "%"; String r = fmtReset(lim.five.resets); if (r.length()) L += " " + r; }
+    if (f7 >= 0) { if (L.length()) L += "  "; L += "7d " + String((int)(f7 + 0.5f)) + "%"; String r = fmtReset(lim.seven.resets); if (r.length()) L += " " + r; }
+    txt(fit(L, PANE_CHARS), PANE_X, y, limitsStale() ? C_DIM : C_FG); y += LINE_H;
   }
+  if (!petLayout && y < CORNER_ROWS_Y) y = CORNER_ROWS_Y - 3;
   spr.drawFastHLine(PANE_X, y + 1, PANE_W - 6, C_FRAME);
   y += 5;
+  int bottom = haveUsage() ? BOTTOM - LINE_H - 2 : BOTTOM;
+  if (haveUsage()) usageStrip(BOTTOM - LINE_H + 3);
   if (!s->todoTotal) {
     txt("no to-do list", PANE_X, y, C_DIM); y += LINE_H;
-    textBlock(s->detail, y + 2, (BOTTOM - y) / LINE_H, C_DIM, false);
+    textBlock(s->detail, y + 2, (bottom - y) / LINE_H, C_DIM, false);
     return;
   }
   // progress bar
@@ -1987,7 +2165,7 @@ static void drawDetail() {
   spr.fillRect(bx + 1, y + 1, (bw - 2) * s->todoDone / max(1, (int)s->todoTotal), 5, C_OK);
   y += LINE_H + 1;
   // items, scrolled by tilt; starts so the current item is visible
-  int rows = (BOTTOM - y) / LINE_H;
+  int rows = (bottom - y) / LINE_H;
   int cur = 0;
   for (int i = 0; i < s->nTodo; i++) if (s->todo[i].st == 'i') { cur = i; break; }
   int maxFirst = max(0, (int)s->nTodo - rows);
@@ -2004,7 +2182,7 @@ static void drawDetail() {
     y += LINE_H;
   }
   int hidden = (int)s->todoTotal - (int)s->todoSkip - (int)s->nTodo;
-  if (first + rows < s->nTodo || hidden > 0) txt("v", W - 10, BOTTOM - LINE_H, C_DIM);
+  if (first + rows < s->nTodo || hidden > 0) txt("v", W - 10, bottom - LINE_H, C_DIM);
   if (first > 0 || s->todoSkip) txt("^", W - 10, y0, C_DIM);
 }
 
@@ -2018,18 +2196,32 @@ static String fmtAge(uint32_t ms) {
 static bool blinkOn() { return (millis() / 500) % 2 == 0; }
 
 static void drawHome() {
+  bool idle = !desk.lastBeat;
+  for (auto& s : sessions) if (s.used) idle = false;
+  layout(idle);   // nothing going on: the big buddy keeps you company; otherwise the compact layout
   String title = titleBase();
   if (pinned.length()) title += " *";
   frame(title, remoteMode ? C_CLAUDE : C_FG, "[A] details  [hold A] talk  [B] menu");
+  if (idle) {
+    if (ssid.length()) {
+      bool up = WiFi.status() == WL_CONNECTED;
+      String msg = up ? "$ waiting for claude" : "$ joining wifi";
+      txt(msg, PANE_X, TOP + 30, C_DIM);
+      if (blinkOn()) spr.fillRect(PANE_X + spr.textWidth(msg) + 2, TOP + 30, 5, 7, up ? C_CLAUDE : C_YEL);
+      if (up) txt(WiFi.localIP().toString(), PANE_X, TOP + 30 + LINE_H + 2, C_FRAME);
+    }
+    String d = fmtTok(tokensToday()) + " tok today";
+    if (tokensToday()) txt(d, PANE_X, BOTTOM - LINE_H + 2, C_DIM);
+    return;
+  }
   int y = TOP + 2;
-  uint32_t tt = tokensToday();
-  int limitY = tt ? BOTTOM - 2 * LINE_H : BOTTOM - LINE_H;
+  bool strip = haveUsage();
+  int limitY = strip ? BOTTOM - 2 * LINE_H : BOTTOM - LINE_H;
   if (desk.lastBeat) {
     txt("desktop " + String(desk.running) + "/" + String(desk.total), PANE_X, y, C_BLUE); y += LINE_H;
-    txt("  " + fit(desk.msg.length() ? desk.msg : desk.entry, PANE_CHARS - 2), PANE_X, y, C_DIM); y += LINE_H + 3;
+    txt("  " + fit(desk.msg.length() ? desk.msg : desk.entry, charsAt(y) - 2), PANE_X, y, C_DIM); y += LINE_H + 3;
   }
   Session* tgt = targetSession();
-  int shown = 0;
   uint32_t now = millis();
   for (auto& s : sessions) {
     if (!s.used || y > limitY) continue;
@@ -2045,34 +2237,26 @@ static void drawHome() {
       st += " " + fmtAge(now - s.stateSince);
     String head = sessionLabel(s);
     if (pinned == s.id) head = "*" + head;
-    int room = PANE_CHARS - 2 - (int)st.length() - 1;
-    head = fit(head, room);
+    head = fit(head, charsAt(y) - 2 - (int)st.length() - 1);
     txt(head, PANE_X + 7, y, isT ? C_FG : C_DIM);
-    txt(st, W - 6 - spr.textWidth(st), y, sc);
+    txt(st, rightX(y) - spr.textWidth(st), y, sc);
     if (isT) spr.drawFastHLine(PANE_X + 7, y + 8, spr.textWidth(head), C_CLAUDE);
     y += LINE_H;
     if (y <= limitY && (s.detail.length() || s.todoTotal)) {
-      int x = PANE_X + 12, room2 = PANE_CHARS - 2;
+      int x = PANE_X + 12, room2 = (rightX(y) - x) / 6;
       String d = s.detail;
       if (s.todoTotal) {
         String pr = String(s.todoDone) + "/" + String(s.todoTotal);
         txt(pr, x, y, s.todoDone == s.todoTotal ? C_OK : C_CLAUDE);
-        x += spr.textWidth(pr) + 6; room2 -= pr.length() + 1;
+        x += spr.textWidth(pr) + 6; room2 = (rightX(y) - x) / 6;
         if (s.todoNow.length() && s.state != "done") d = s.todoNow;
       }
       txt(fit(d, room2), x, y, C_DIM);
       y += LINE_H;
     }
-    y += 2; shown++;
+    y += 2;
   }
-  if (!shown && !desk.lastBeat && ssid.length()) {
-    bool up = WiFi.status() == WL_CONNECTED;
-    String msg = up ? "$ waiting for claude" : "$ joining wifi";
-    txt(msg, PANE_X, TOP + 30, C_DIM);
-    if (blinkOn()) spr.fillRect(PANE_X + spr.textWidth(msg) + 2, TOP + 30, 5, 7, up ? C_CLAUDE : C_YEL);
-    if (up) txt(WiFi.localIP().toString(), PANE_X, TOP + 30 + LINE_H + 2, C_FRAME);
-  }
-  if (tt) txt(fmtTok(tt) + " tok today", PANE_X, BOTTOM - LINE_H + 2, C_DIM);
+  if (strip) usageStrip(BOTTOM - LINE_H + 3);
 }
 
 static void draw() {
@@ -2081,6 +2265,7 @@ static void draw() {
   spr.setTextSize(1);
   const char* mood; uint16_t moodColor;
   uint8_t bs = buddyState(&mood, &moodColor);
+  layout(false);
 
   uint32_t pk = blePasskey();
   Approval* a = topApproval();
@@ -2100,7 +2285,8 @@ static void draw() {
   else if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) drawNotice();
   else if (r) drawChoice(r);
   else if (screen == SCR_HOME && updatePromptDue()) drawUpdatePrompt();
-  else if (!setupDone) drawSetup();
+  else if (!setupDone) { layout(true); drawSetup(); }
+  else if (screen == SCR_PET) { layout(true); drawPet(); bs = B_IDLE; mood = "hi!"; moodColor = C_CLAUDE; }
   else if (screen == SCR_ACTIONS) drawActions();
   else if (screen == SCR_SESSIONS) drawSessions();
   else if (screen == SCR_INFO) drawInfo();
@@ -2108,7 +2294,7 @@ static void draw() {
   else if (screen == SCR_TEST) drawTest();
   else if (screen == SCR_DETAIL) drawDetail();
   else drawHome();
-  buddyPane(bs, mood, moodColor);
+  if (petLayout) buddyPane(bs, mood, moodColor); else buddyCorner(bs, mood, moodColor);
   spr.pushSprite(0, 0);
 }
 
@@ -2252,7 +2438,7 @@ static void buttons() {
       case MI_MACRO:  if (s) { deliverText(s, macros[e.arg].text); beep(2); } screen = SCR_HOME; menuIdx = 0; break;
       case MI_REMOTE: setRemoteSetting(conf.remote + 1); break;                       // stay in menu
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
-      case MI_BUDDY:  prefs.putUChar("buddy", buddyNextSpecies()); break;            // stay in menu
+      case MI_BUDDY:  screen = SCR_PET; break;
       case MI_FONT:   textStyle = textStyle ? 0 : 1; prefs.putUChar("font", textStyle); spr.setFont(uiFont()); break;   // stay in menu
       case MI_CLOCK:  clock24 = !clock24; prefs.putBool("clk24", clock24); break;     // stay in menu
       case MI_HELP:   screen = SCR_HELP; menuIdx = 0; break;
@@ -2284,6 +2470,13 @@ static void buttons() {
   }
 
   if (screen == SCR_INFO || screen == SCR_HELP) { screen = SCR_HOME; return; }
+
+  if (screen == SCR_PET) {
+    if (bClick) prefs.putUChar("buddy", buddyNextSpecies());
+    else if (pClick) { uint8_t i = (buddySpeciesIdx() + buddySpeciesCount() - 1) % buddySpeciesCount(); buddySetSpeciesIdx(i); prefs.putUChar("buddy", i); }
+    else { screen = SCR_ACTIONS; beep(0); }           // A or hold B: back to the menu
+    return;
+  }
 
   if (screen == SCR_DETAIL) {
     if (aHold) voiceCapture(nullptr);                 // talk to the session you're looking at

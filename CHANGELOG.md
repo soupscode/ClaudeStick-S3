@@ -2,6 +2,13 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.8.0
+- New layout: full-width content, small buddy face in the corner
+- Big buddy on the idle screen and in the buddy picker (menu)
+- Usage strip: context %, 5-hour and 7-day plan limits (Pro/Max)
+- Installer wraps your status line to feed the Stick (--no-statusline to skip)
+- Phone page shows limits and context %
+
 ## 0.7.2
 - Clock shows 12-hour time (8:59p); 24-hour optional
 - Time zone step in setup, detected from your browser

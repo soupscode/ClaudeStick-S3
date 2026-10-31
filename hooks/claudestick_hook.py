@@ -22,6 +22,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -41,6 +42,7 @@ DISCOVER_BACKOFF_S = 120
 DEVICE_CFG_TTL_S = 60
 POLL_S = 0.4
 USAGE_EVERY_S = 20          # PostToolUse sends token totals at most this often
+STATUS_EVERY_S = 3          # the status line forwards limits at most this often (per session)
 TODO_MAX = 12
 
 DEFAULT_MACROS = [
@@ -1007,7 +1009,98 @@ def on_event(dev, ev, cfg):
 SLOW_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"}
 
 
+# ------------------------------------------------------------------ status line
+# Claude Code hands its status-line command a JSON blob (context %, plan limits, cost, model)
+# that hooks never see. `claudestick_hook.py --statusline` forwards the useful parts to the
+# Stick, then runs whatever status line you had before (the installer remembers it) so
+# nothing changes in your terminal.
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_from_statusline(d):
+    cw = d.get("context_window") or {}
+    rl = d.get("rate_limits") or {}
+    out = {}
+    pct = _num(cw.get("used_percentage"))
+    if pct is not None:
+        out["ctx_pct"] = round(pct, 1)
+    size = _num(cw.get("context_window_size"))
+    if size:
+        out["ctx_size"] = int(size)
+    cost = _num((d.get("cost") or {}).get("total_cost_usd"))
+    if cost is not None:
+        out["cost"] = round(cost, 2)
+    m = d.get("model") or {}
+    name = m.get("display_name") or m.get("id")
+    if name:
+        out["model"] = str(name)[:24]
+    for key, short in (("five_hour", "five"), ("seven_day", "seven")):   # Pro/Max only, may be absent
+        w = rl.get(key) or {}
+        p = _num(w.get("used_percentage"))
+        if p is not None:
+            out[short] = {"pct": round(p, 1), "resets": int(_num(w.get("resets_at")) or 0)}
+    return out
+
+
+def forward_usage(cfg, d, usage):
+    session = d.get("session_id") or ""
+    stamp = os.path.join(TMP, "claudestick-status-%s-%s" % (UID, re.sub(r"[^A-Za-z0-9_-]", "_", session)[:40]))
+    if _recent(stamp, STATUS_EVERY_S):
+        return
+    _touch(stamp)
+    cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or ""
+    body = base_body({"session_id": session, "cwd": cwd})
+    Device(cfg).call("POST", "/usage", {**body, **usage}, timeout=0.8)
+
+
+def default_status_line(usage):
+    parts = []
+    if "ctx_pct" in usage:
+        parts.append("ctx %d%%" % round(usage["ctx_pct"]))
+    if "five" in usage:
+        parts.append("5h %d%%" % round(usage["five"]["pct"]))
+    if "seven" in usage:
+        parts.append("7d %d%%" % round(usage["seven"]["pct"]))
+    return " | ".join(parts)
+
+
+def statusline_main():
+    raw = sys.stdin.read()
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    cfg = load_config()
+    usage = usage_from_statusline(d)
+    worker = None
+    if usage and not device_down():
+        worker = threading.Thread(target=forward_usage, args=(cfg, d, usage), daemon=True)
+        worker.start()
+    chain = cfg.get("statusline_chain")
+    out = ""
+    if chain:   # your previous status line keeps working exactly as before
+        try:
+            r = subprocess.run(chain, shell=True, input=raw, capture_output=True, text=True, timeout=5)
+            out = r.stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+    else:
+        out = default_status_line(usage)
+    if worker:
+        worker.join(1.2)
+    sys.stdout.write(out)
+
+
 def main():
+    if "--statusline" in sys.argv:
+        return statusline_main()
     if os.environ.get("CLAUDESTICK", "1") == "0":
         return
     try:

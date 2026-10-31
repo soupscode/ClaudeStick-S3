@@ -56,7 +56,14 @@ def save_json(path, data):
     os.replace(tmp, path)
 
 
-def strip_ours(settings):
+def strip_ours(settings, cfg=None):
+    sl = settings.get("statusLine")
+    if isinstance(sl, dict) and MARK in sl.get("command", ""):   # put back the status line we replaced
+        chain = (cfg or {}).get("statusline_chain")
+        if chain:
+            settings["statusLine"] = {**sl, "command": chain}
+        else:
+            settings.pop("statusLine", None)
     hooks = settings.get("hooks", {})
     for event in list(hooks):
         groups = []
@@ -120,7 +127,7 @@ def install(args):
     # Local config only holds how to reach the Stick; macros, waits and alerts live on
     # the Stick (settings page) and are fetched by the hook.
     cfg = load_json(CONFIG, None) or {}
-    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env")}
+    cfg = {k: v for k, v in cfg.items() if k in ("host", "port", "token", "device_id", "mdns_host", "added_todo_env", "statusline_chain")}
     cfg.setdefault("port", 7880)
     for k in ("host", "token", "port"):
         v = getattr(args, k)
@@ -130,7 +137,8 @@ def install(args):
     print(f"config  -> {CONFIG}")
 
     cmd = f'"{sys.executable}" "{HOOK_DST}"'
-    settings = strip_ours(load_json(SETTINGS, {}))
+    settings = strip_ours(load_json(SETTINGS, {}), cfg)   # a re-run starts from your original status line
+    cfg.pop("statusline_chain", None)
     hooks = settings.setdefault("hooks", {})
 
     def add(event, timeout):
@@ -156,6 +164,22 @@ def install(args):
         print(f"env     -> {TODO_ENV}=1 (to-do list on the Stick; --no-todo-tools to skip)")
     if not env:
         settings.pop("env", None)
+
+    # Plan limits and context % only reach a status-line command, so the Stick's usage strip needs one.
+    # An existing status line is kept: ours runs it and prints its output unchanged.
+    status_cmd = cmd + " --statusline"
+    cur = settings.get("statusLine")
+    if args.no_statusline:
+        pass
+    elif isinstance(cur, dict) and cur.get("command"):
+        cfg["statusline_chain"] = cur["command"]
+        settings["statusLine"] = {**cur, "command": status_cmd}
+        print("status  -> wraps your existing status line (usage limits go to the Stick)")
+    elif cur:
+        print("status  -> your statusLine isn't a command; left alone (no usage limits on the Stick)")
+    else:
+        settings["statusLine"] = {"type": "command", "command": status_cmd}
+        print("status  -> added a small status line (ctx / 5h / 7d); --no-status-line to skip")
     save_json(CONFIG, cfg)
 
     backup_settings()
@@ -167,12 +191,15 @@ def install(args):
 def uninstall(_args):
     if os.path.exists(SETTINGS):
         backup_settings()
-        settings = strip_ours(load_json(SETTINGS, {}))
-        if (load_json(CONFIG, {}) or {}).get("added_todo_env"):
+        local = load_json(CONFIG, {}) or {}
+        settings = strip_ours(load_json(SETTINGS, {}), local)
+        if local.get("added_todo_env"):
             settings.get("env", {}).pop(TODO_ENV, None)
             if not settings.get("env"):
                 settings.pop("env", None)
         save_json(SETTINGS, settings)
+        if local.pop("statusline_chain", None) is not None:   # restored above; don't keep a stale copy
+            save_json(CONFIG, local)
         print("removed ClaudeStick hooks from Claude Code settings")
     print(f"left {HOME_DIR} in place (delete it to remove your config/macros)")
 
@@ -208,6 +235,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", help="device IP or hostname (default claudestick.local)")
     p.add_argument("--token", help="token shown on the device (menu > info)")
+    p.add_argument("--no-statusline", "--no-status-line", dest="no_statusline", action="store_true",
+                   help="don't touch the status line (the Stick then can't show plan limits)")
     p.add_argument("--no-todo-tools", action="store_true",
                    help=f"don't set {TODO_ENV}=1 (the Stick's to-do view stays empty on newer models)")
     p.add_argument("--port", type=int)

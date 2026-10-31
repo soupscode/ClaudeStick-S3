@@ -33,7 +33,7 @@ CI runs all of this on every push and pull request; publishing is gated on the b
 A change is ready when:
 
 1. `tests/run_all.sh` passes, with new tests for new behavior (and the mock device updated if the API changed).
-2. User-visible behavior is in `README.md`; design or API changes are in `docs/HOW_IT_WORKS.md`.
+2. User-visible behavior is in `docs/HOW_TO_USE.md` (or `REMOTE.md` / `TROUBLESHOOTING.md`); design or API changes are in `docs/HOW_IT_WORKS.md`. Keep `README.md` a short landing page: what it is, how to install, links.
 3. `CHANGELOG.md` has an entry. If the firmware changed, bump `FW_VERSION` in `firmware/src/main.cpp` (the bridge's `VERSION` in `bridge/claudestick_bridge.py` must match; a test checks) and add a `## x.y.z` section: its bullets are what the Stick's update prompt shows, so keep them short and plain.
 4. Nothing personal or environment-specific is hard-coded: no names, hostnames, addresses, tokens or accounts in code, docs, tests or screenshots. Use neutral sample data (`api-server`, `home-wifi`).
 5. Screenshots in `docs/` are regenerated if the UI changed (render with `tests/host/run.sh`, then `cd tests/host/out && python3 ../sheet.py ../../../docs/screens.png <frame names>`).
@@ -48,3 +48,7 @@ Bump the version and changelog as above and push to `main`. CI builds, runs `too
 - Firmware text is ASCII only (6x8 glyphs); fold anything displayed. Layout constants and the corner/pet layouts are at the top of the UI section in `main.cpp`.
 - Don't block the main loop: long operations (TLS, uploads) are guarded by idle and memory checks. Anything that could hold up an approval needs a reason.
 - `firmware/src/ble_bridge.*` and `firmware/src/buddies/*` track upstream (anthropics/claude-desktop-buddy); avoid editing them.
+
+## Forking
+
+Fork it freely. CI bakes `https://<owner>.github.io/<repo>/` into the firmware as its update source, so a fork's Sticks update from the fork: enable Pages (Settings → Pages → Source: GitHub Actions), push, and the flasher and updates work. Change the copyright holder in `LICENSE`, the flasher link in `README.md` and the wording in `web/index.html`.

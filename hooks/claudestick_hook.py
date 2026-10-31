@@ -91,7 +91,7 @@ RISKY = [
     (r"\bdocker\s+(system|volume)\s+prune\b", "prunes Docker data"),
     (r"\b(shutdown|reboot|poweroff|halt)\b", "power action"),
     (r"\b(iptables\s+-F|nft\s+flush)\b", "flushes firewall rules"),
-    (r"\bsystemctl\s+(stop|disable|mask)\s+(sshd?|networking|pve\w*|wings|docker)\b", "stops a critical service"),
+    (r"\bsystemctl\s+(stop|disable|mask)\s+(sshd?|networking|NetworkManager|pve\w*|docker)\b", "stops a critical service"),
 ]
 SENSITIVE_PATHS = re.compile(r"(^/etc/|/\.ssh/|(^|/)\.env(\.|$)|id_rsa|authorized_keys|/\.claude/settings)")
 

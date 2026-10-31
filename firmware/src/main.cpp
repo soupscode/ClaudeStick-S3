@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.8.0";
+static const char*    FW_VERSION   = "0.8.1";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -550,9 +550,17 @@ static void decide(Approval* a, int8_t d, bool fromStick = true) {
 
 // ----------------------------------------------------------- HTTP side ---
 
+// Compares in constant time so the token can't be guessed byte by byte from response timing.
+static bool tokenEq(const String& a, const String& b) {
+  if (a.length() != b.length()) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < a.length(); i++) diff |= (uint8_t)(a[i] ^ b[i]);
+  return diff == 0;
+}
+
 static bool authed() {
   if (!token.length()) return true;
-  if (server.header("X-Token") == token || server.arg("t") == token) return true;
+  if (tokenEq(server.header("X-Token"), token) || tokenEq(server.arg("t"), token)) return true;
   server.send(401, "application/json", "{\"error\":\"bad token\"}");
   return false;
 }
@@ -955,6 +963,8 @@ static void hHealth() {
   out["hook"] = EMBED_HOOK_SHA;
   out["reset"] = resetWhy; out["safe_mode"] = safeMode;
   out["heap"] = ESP.getFreeHeap(); out["psram"] = ESP.getFreePsram();
+  out["heap_min"] = ESP.getMinFreeHeap(); out["heap_block"] = (uint32_t)internalBlock();
+  out["uptime_s"] = millis() / 1000;
   out["auth"] = token.length() > 0;
   sendJson(out);
 }
@@ -984,7 +994,7 @@ static void hOtaDone() {
 static void hOtaUpload() {
   HTTPUpload& up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
-    otaAllowed = server.header("X-Token") == token || server.arg("t") == token;
+    otaAllowed = tokenEq(server.header("X-Token"), token) || tokenEq(server.arg("t"), token);
     otaBytes = 0;
     if (otaAllowed && !Update.begin(UPDATE_SIZE_UNKNOWN)) otaAllowed = false;
   } else if (up.status == UPLOAD_FILE_WRITE && otaAllowed) {
@@ -1295,7 +1305,7 @@ static void apTick() {
 
 static bool setupAuthed() {
   if (!setupDone) return true;
-  if (server.header("X-Token") == token || server.arg("t") == token) return true;
+  if (tokenEq(server.header("X-Token"), token) || tokenEq(server.arg("t"), token)) return true;
   server.send(401, "application/json", "{\"error\":\"setup is finished; open the link with ?t=<token>\"}");
   return false;
 }
@@ -2536,6 +2546,7 @@ void setup() {
     case ESP_RST_DEEPSLEEP: resetWhy = "wake"; break;
     default:               resetWhy = "other"; break;
   }
+  { String why = prefs.getString("why", ""); if (why.length() && esp_reset_reason() == ESP_RST_SW) resetWhy = why; prefs.remove("why"); }
   M5.update();
   if (M5.BtnB.isPressed() && !M5.BtnA.isPressed()) safeMode = true;   // hold B at power-on
   ssid  = prefs.getString("ssid", CS_WIFI_SSID);
@@ -2582,6 +2593,18 @@ void setup() {
   Serial.printf("ClaudeStick %s ready. Type 'info' for details.\n", FW_VERSION);
 }
 
+// If the heap fragments badly after days of uptime, restart while idle instead of failing in odd ways.
+static void memoryWatch() {
+  static uint32_t last = 0;
+  static uint8_t low = 0;
+  if (millis() - last < 30000) return;
+  last = millis();
+  if (internalBlock() >= 10000) { low = 0; return; }
+  if (++low >= 3 && !topApproval() && !topStop() && upd.progress < 0 && millis() - lastActivity > 60000) {
+    prefs.putString("why", "low memory"); delay(100); ESP.restart();
+  }
+}
+
 void loop() {
   M5.update();
   serialTick();
@@ -2592,6 +2615,7 @@ void loop() {
   apTick();
   updateTick();
   ntpTick();
+  memoryWatch();
   bootHealthTick();
   buttons();
   tiltTick();
@@ -2615,7 +2639,7 @@ void loop() {
   static bool screenOff = false;
   if (dimmed && !screenOff && idle > 3 * DIM_AFTER_MS) { M5.Display.setBrightness(0); screenOff = true; }
   if (!dimmed && screenOff) screenOff = false;
-  if (!dimmed && getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240);
+  if (!dimmed && getCpuFrequencyMhz() != 160) setCpuFrequencyMhz(160);   // plenty for this UI; Wi-Fi/BLE/TLS all run fine and it saves battery
 
   static uint32_t lastPk = 0;
   if (blePasskey() != lastPk) { lastPk = blePasskey(); touch(); }

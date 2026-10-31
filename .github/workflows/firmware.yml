@@ -41,6 +41,21 @@ jobs:
         env:
           # Bake the Pages URL in so the Stick's settings page can update itself.
           CS_UPDATE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      - name: Verify release (OTA metadata, partition table, hashes)
+        # Fails the build, and so blocks the deploy, if an over-the-air update would be broken.
+        run: python3 tools/verify_release.py
+        env:
+          CS_UPDATE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      - name: Build report (size + compiler warnings)
+        if: always()
+        run: |
+          [ -f build.log ] || exit 0
+          sizes=$(grep -E '^(RAM|Flash):' build.log | sed 's/\r//g; s/%/%25/g' | paste -sd' ' -)
+          nwarn=$(grep -cE '^(src|firmware/src)/.*warning:' build.log || true)
+          echo "::notice title=firmware size::$sizes; warnings in firmware/src: $nwarn"
+          { echo "### Firmware build"; grep -E '^(RAM|Flash):' build.log || true; echo; echo "warnings in firmware/src: $nwarn"; } >> "$GITHUB_STEP_SUMMARY"
+          w=$(grep -E '^(src|firmware/src)/.*warning:' build.log | sort -u | head -40 | sed 's/\r//g; s/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          if [ -n "$w" ]; then echo "::warning title=compiler warnings (firmware/src)::$w"; fi
       - uses: actions/upload-artifact@v4
         with:
           name: claudestick-firmware

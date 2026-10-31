@@ -258,7 +258,7 @@ if __name__ == "__main__":
     main()
 )CSEMBED";
 
-#define EMBED_HOOK_SHA "76597cc1bd96d820c24301f994dcf0b421a646cd1060182a46805ddb932f4319"
+#define EMBED_HOOK_SHA "65ed7aa1e254a49d6af23ea6d42ad8da2212a5adca9ea1d3de511ff5cdc83c45"
 static const char EMBED_HOOK_PY[] PROGMEM = R"CSEMBED(#!/usr/bin/env python3
 """ClaudeStick hook for Claude Code (stdlib only).
 
@@ -352,7 +352,7 @@ RISKY = [
     (r"\bdocker\s+(system|volume)\s+prune\b", "prunes Docker data"),
     (r"\b(shutdown|reboot|poweroff|halt)\b", "power action"),
     (r"\b(iptables\s+-F|nft\s+flush)\b", "flushes firewall rules"),
-    (r"\bsystemctl\s+(stop|disable|mask)\s+(sshd?|networking|pve\w*|wings|docker)\b", "stops a critical service"),
+    (r"\bsystemctl\s+(stop|disable|mask)\s+(sshd?|networking|NetworkManager|pve\w*|docker)\b", "stops a critical service"),
 ]
 SENSITIVE_PATHS = re.compile(r"(^/etc/|/\.ssh/|(^|/)\.env(\.|$)|id_rsa|authorized_keys|/\.claude/settings)")
 
@@ -1442,7 +1442,7 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <div><label>done menu wait (s)</label><input id=sw type=number min=5></div></div>
 <div class=row><input type=checkbox id=qd><label for=qd>show Claude's multiple-choice questions on the Stick (remote mode)</label></div></div>
 
-<div class=c><div class=t>voice (push-to-talk)</div><div class=d>Any OpenAI-compatible speech-to-text server, e.g. <b>speaches</b> / faster-whisper in an LXC: <code>http://whisper.lan:8000/v1/audio/transcriptions</code>. Hold A on the Stick to talk.</div>
+<div class=c><div class=t>voice (push-to-talk)</div><div class=d>Any OpenAI-compatible speech-to-text server, e.g. <b>speaches</b> / faster-whisper on your network: <code>http://your-server:8000/v1/audio/transcriptions</code>. Hold A on the Stick to talk.</div>
 <label>transcription URL</label><input id=stt placeholder="http://host:8000/v1/audio/transcriptions">
 <div class=g2><div><label>model</label><input id=sttm placeholder="whisper-1"></div><div><label>language (optional)</label><input id=sttl placeholder="en"></div></div>
 <label>API key (optional)</label><input id=sttk type=password placeholder="leave blank to keep"></div>

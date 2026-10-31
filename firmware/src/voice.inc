@@ -1,7 +1,7 @@
 // ---------------------------------------------------------- push-to-talk ---
 // Hold A to talk (on an approval card: deny it and tell Claude why). Audio is recorded at 16 kHz
 // while the button is held, sent as a WAV to an OpenAI-compatible speech-to-text
-// endpoint (e.g. speaches / faster-whisper on your homelab), and the text is shown
+// endpoint (e.g. speaches / faster-whisper on your network), and the text is shown
 // for confirmation before it goes to Claude like any phone-typed instruction.
 // Included from main.cpp; shares its state.
 

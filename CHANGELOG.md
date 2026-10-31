@@ -2,6 +2,12 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.8.1
+- Update checks wait for the clock and for a quiet moment
+- Clear message when memory is too low to update
+- Runs at 160 MHz (less battery); restarts itself if the heap gets badly fragmented
+- More tamper-proof token check
+
 ## 0.8.0
 - New layout: full-width content, small buddy face in the corner
 - Big buddy on the idle screen and in the buddy picker (menu)

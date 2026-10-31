@@ -48,7 +48,7 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <div><label>done menu wait (s)</label><input id=sw type=number min=5></div></div>
 <div class=row><input type=checkbox id=qd><label for=qd>show Claude's multiple-choice questions on the Stick (remote mode)</label></div></div>
 
-<div class=c><div class=t>voice (push-to-talk)</div><div class=d>Any OpenAI-compatible speech-to-text server, e.g. <b>speaches</b> / faster-whisper in an LXC: <code>http://whisper.lan:8000/v1/audio/transcriptions</code>. Hold A on the Stick to talk.</div>
+<div class=c><div class=t>voice (push-to-talk)</div><div class=d>Any OpenAI-compatible speech-to-text server, e.g. <b>speaches</b> / faster-whisper on your network: <code>http://your-server:8000/v1/audio/transcriptions</code>. Hold A on the Stick to talk.</div>
 <label>transcription URL</label><input id=stt placeholder="http://host:8000/v1/audio/transcriptions">
 <div class=g2><div><label>model</label><input id=sttm placeholder="whisper-1"></div><div><label>language (optional)</label><input id=sttl placeholder="en"></div></div>
 <label>API key (optional)</label><input id=sttk type=password placeholder="leave blank to keep"></div>

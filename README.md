@@ -24,7 +24,7 @@ The mode switch reaches Claude at the next hook (tool result, prompt, or Done-me
 
 ## Screen and buttons
 
-The UI is a little terminal pane. Content uses the full width, with a small buddy face in the top-right corner and key hints on the bottom border. The face reacts: `(v.v)` busy while Claude works, `(O.O)` when it needs you, `(^o^)` when it finishes, `(@.@)` on errors, hearts when you approve, and a tiny mood word under it. When nothing is going on (no sessions), the Stick shows the full-size species buddy instead, one of Anthropic's 18 animated ASCII buddies (from claude-desktop-buddy). **Menu → buddy** opens a picker. Previews are in `docs/screens-v0.8.png`, `docs/screens-v0.7.png` and `docs/buddies.png`.
+The UI is a little terminal pane. Content uses the full width, with a small buddy face in the top-right corner and key hints on the bottom border. The face reacts: `(v.v)` busy while Claude works, `(O.O)` when it needs you, `(^o^)` when it finishes, `(@.@)` on errors, hearts when you approve, and a tiny mood word under it. When nothing is going on (no sessions), the Stick shows the full-size species buddy instead, one of Anthropic's 18 animated ASCII buddies (from claude-desktop-buddy). **Menu → buddy** opens a picker. Previews are in `docs/screens.png`, `docs/phone.png` and `docs/buddies.png`.
 
 Reading the screen:
 
@@ -93,7 +93,7 @@ These numbers only exist in Claude Code's *status line* data, which hooks never 
 
 ### Push-to-talk
 
-Hold A, speak (up to 20 s), and release. The Stick sends the audio to a speech-to-text server, shows you the text, and A sends it. It answers the Done/Question card if one is up; otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works. On the homelab, run [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) in an LXC; `Systran/faster-whisper-small` is fine on CPU. Then set the URL under **settings → voice**.
+Hold A, speak (up to 20 s), and release. The Stick sends the audio to a speech-to-text server, shows you the text, and A sends it. It answers the Done/Question card if one is up; otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works. Run [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network, in a container if you like; `Systran/faster-whisper-small` is fine on CPU. Then set the URL under **settings → voice**.
 
 ### Choosing the session
 
@@ -189,7 +189,10 @@ Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Ever
 - **The prompt:** the Stick checks `<update source>/ota.json` 90 s after boot and every 6 h. Downloads are HTTPS, verified against an embedded Mozilla root bundle (`tools/gen_ca_bundle.sh` regenerates it). A newer version shows **update available!** with that version's bullets from `CHANGELOG.md`, and three choices: **update now** · **remind me later** (24 h) · **skip this version**. *Menu → check for updates* checks on demand.
 - **Rollback:** a boot only counts as good after 20 s of running. Three bad boots in a row switch back to the previous firmware, skip the failed version, and show a "rolled back" notice. No USB needed.
 - **Hooks follow the firmware:** each machine's hook compares itself with the copy the Stick serves (sha256) and replaces itself if it's out of date. It checks the hash and that the file parses before swapping.
-- **Releasing:** bump `FW_VERSION` in `firmware/src/main.cpp`, add a `## x.y.z` section to `CHANGELOG.md`, and push. CI builds and publishes, and every Stick offers the update.
+- **Safe timing:** background checks wait until the clock is set (HTTPS certificates have dates) and for a quiet moment: no pending approval, no button press in the last 15 s. An install first checks that there is enough free memory for the TLS handshake and says so if there isn't.
+- **Trust model:** the Stick trusts whatever your update source serves over verified HTTPS. Images are not code-signed, so protect the repo and the Pages site that serve `ota.json`. The inactive slot is the only thing an update writes, so a dropped connection or power loss mid-download leaves the running firmware untouched.
+- **Releasing:** bump `FW_VERSION` in `firmware/src/main.cpp`, add a `## x.y.z` section to `CHANGELOG.md`, and push. CI builds, runs `tools/verify_release.py` (versions agree, SHA-256 matches, the app fits the OTA slot, the partition table has two OTA slots, the update URL is baked in), then publishes; a failed check blocks the publish. Every Stick then offers the update.
+- **Your own fork:** nothing in the code is tied to one account. CI bakes `https://<owner>.github.io/<repo>/` into the firmware as the update source, so a fork's Sticks update from the fork. Enable Pages (Source: GitHub Actions), push, and the flasher and updates work. Change the copyright holder in `LICENSE`, and `web/index.html` if you want your own wording.
 
 `~/.claudestick/config.json` on each machine only holds `host`, `port`, `token` and the Stick's `device_id`. **If the Stick's IP changes**, the hook looks for it by device id (mDNS name `claudestick-xxxx.local`, then a quick sweep of the local /24) at the next prompt, then updates the file itself. Tool calls never wait on that search.
 

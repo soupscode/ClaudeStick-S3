@@ -182,7 +182,7 @@ class H(BaseHTTPRequestHandler):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
             hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
-            return self.reply({"ok": True, "fw": "0.8.0", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+            return self.reply({"ok": True, "fw": "0.8.1", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
                                "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")
@@ -195,7 +195,7 @@ class H(BaseHTTPRequestHandler):
             if not self.setup_auth():
                 return
             if p == "/setup/info":
-                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.8.0", "port": self.server.server_port,
+                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.8.1", "port": self.server.server_port,
                                    "tz": SETUP["tz"], "tz_name": SETUP["tz_name"], "clock24": SETUP["clock24"],
                                    "clock": SETUP.get("clock", ""), "font": SETUP["font"],
                                    "wifi": {"ssid": SETUP["ssid"], "connected": SETUP["connected"], "ip": SETUP["ip"]},
@@ -203,7 +203,7 @@ class H(BaseHTTPRequestHandler):
                                    "volume": SETUP["volume"], "tilt": SETUP["tilt"], "remote": CONF["remote"],
                                    "buddies": BUDDIES, "token": TOKEN, "ip": SETUP["ip"]})
             if p == "/setup/scan":
-                return self.reply([{"ssid": "homelab-iot", "rssi": -48, "secure": True},
+                return self.reply([{"ssid": "home-wifi", "rssi": -48, "secure": True},
                                    {"ssid": "neighbors", "rssi": -80, "secure": False}])
         if not self.ok_auth():
             return

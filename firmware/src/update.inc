@@ -11,6 +11,18 @@
 
 #include <HTTPUpdate.h>
 #include <esp_ota_ops.h>
+#if defined(ESP_PLATFORM)
+#include <esp_heap_caps.h>
+#endif
+
+// Largest free block in internal RAM: TLS needs it, and it shrinks when the heap fragments.
+static size_t internalBlock() {
+#if defined(ESP_PLATFORM)
+  return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+  return ESP.getFreeHeap();
+#endif
+}
 
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
 
@@ -61,10 +73,20 @@ static bool fetchText(const String& url, String& out) {
   return code == 200;
 }
 
+// An update source path from ota.json must stay relative to the update URL.
+static bool safeAppPath(const String& p) {
+  return p.length() && p.length() < 120 && !p.startsWith("/") && p.indexOf("://") < 0 && p.indexOf("..") < 0;
+}
+
 static void checkForUpdate(bool manual) {
+  if (!conf.updateUrl.length()) { upd.lastCheck = millis() | 1; if (manual) notice("updates", "no update source set: open settings", C_YEL_U); return; }
+  if (WiFi.status() != WL_CONNECTED) { upd.lastCheck = millis() | 1; if (manual) notice("updates", "no wi-fi", C_YEL_U); return; }
+  // HTTPS certificates are only valid within dates, so the clock has to be set first (NTP, hook, desktop or setup page).
+  if (conf.updateUrl.startsWith("https://") && !clockOk()) {
+    if (manual) notice("updates", "the clock isn't set yet; try again in a minute", C_YEL_U);
+    return;   // leave lastCheck alone: the next idle tick tries again
+  }
   upd.lastCheck = millis() | 1;
-  if (!conf.updateUrl.length()) { if (manual) notice("updates", "no update source set: open settings", C_YEL_U); return; }
-  if (WiFi.status() != WL_CONNECTED) { if (manual) notice("updates", "no wi-fi", C_YEL_U); return; }
   String body;
   if (!fetchText(updateBase() + "ota.json", body)) {
     if (manual) notice("updates", "couldn't reach " + conf.updateUrl + " (" + upd.error + ")", C_BAD_U);
@@ -78,7 +100,8 @@ static void checkForUpdate(bool manual) {
     bool fresh = v != upd.version;
     upd.version = v;
     upd.notes = (const char*)(d["notes"] | "");
-    upd.app = (const char*)(d["app"] | "firmware/claudestick-app.bin");
+    String app = (const char*)(d["app"] | "firmware/claudestick-app.bin");
+    upd.app = safeAppPath(app) ? app : String("firmware/claudestick-app.bin");
     if (fresh || manual) upd.remindAt = 0;
     if (fresh) beep(0);
   } else if (manual) {
@@ -91,16 +114,27 @@ static bool updatePromptDue() {
   return upd.available && setupDone && upd.progress < 0 && (!upd.remindAt || (int32_t)(millis() - upd.remindAt) >= 0);
 }
 
+// Background checks wait for a quiet moment: a check can block the screen and the hooks for a few seconds.
 static void updateTick() {
   if (!setupDone || WiFi.status() != WL_CONNECTED || upd.progress >= 0) return;
   uint32_t now = millis();
-  if (!upd.lastCheck ? now > 90000 : now - upd.lastCheck > 6UL * 3600 * 1000) checkForUpdate(false);
+  if (!(!upd.lastCheck ? now > 90000 : now - upd.lastCheck > 6UL * 3600 * 1000)) return;
+  static uint32_t lastTry = 0;
+  if (now - lastTry < 15000) return;
+  if (topApproval() || topStop() || now - lastActivity < 15000) return;
+  lastTry = now;
+  checkForUpdate(false);
 }
 
 static void drawUpdateProgress();   // UI section
 
 static void installUpdate() {
   String url = updateBase() + upd.app;
+  if (url.startsWith("https://") && !clockOk()) { notice("update", "the clock isn't set yet; try again in a minute", C_YEL_U, 8000); return; }
+  if (internalBlock() < 40000) {   // a TLS handshake needs roughly this much in one piece
+    notice("update", "low on memory (" + String(internalBlock() / 1024) + " KB free): restart the Stick, then try again", C_YEL_U, 10000);
+    return;
+  }
   upd.progress = 0; upd.error = "";
   drawUpdateProgress();
   WiFiClientSecure tls;

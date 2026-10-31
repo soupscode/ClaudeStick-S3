@@ -3,3 +3,5 @@ firmware/src/secrets.h
 __pycache__/
 web/firmware/*.bin
 web/ota.json
+firmware/src/build_info.h
+firmware/src/embedded_files.h

@@ -2,6 +2,10 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## Unreleased
+- Tests live in the repo (`tests/`) and gate publishing in CI
+- Release-ready docs: README, docs/HOW_IT_WORKS.md, CONTRIBUTING.md, SECURITY.md
+
 ## 0.8.1
 - Update checks wait for the clock and for a quiet moment
 - Clear message when memory is too low to update

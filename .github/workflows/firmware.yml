@@ -5,6 +5,7 @@ name: firmware
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -13,10 +14,32 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  test:
+    # Hook, installer, mock-device and firmware-logic tests (the firmware runs on the host against stand-ins).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: tests/run_all.sh --no-browser
+
+  browser-tests:
+    # Setup wizard and phone page in headless Chromium. Informational: it doesn't block publishing.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+      - run: tests/run_all.sh --browser-only
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -67,7 +90,12 @@ jobs:
           path: web
 
   deploy:
-    needs: build
+    # Only publishes from main, and only when the build, release checks and tests all passed.
+    needs: [build, test]
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment:
       name: github-pages

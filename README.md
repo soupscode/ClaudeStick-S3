@@ -1,233 +1,122 @@
 # ClaudeStick
 
-Approvals, live status and one-button macros for Claude on an **M5Stack StickS3** (K150).
+**A pocket-size handheld for Claude Code.** Approve or deny tool calls with a button, see what every Claude session is doing, send one-button macros, talk to Claude, and keep an eye on your plan limits, without going back to the terminal. It runs on the **M5Stack StickS3** and works with the `claude` CLI on any machine on your network (over Wi-Fi) and with the Claude desktop app (over Bluetooth).
 
-| Source | Link | What works |
-|---|---|---|
-| Claude desktop app (Cowork, Claude Code in the app), Mac/Windows | Bluetooth (Anthropic's Hardware Buddy API) | Status, approve/deny |
-| `claude` CLI on any machine/LXC on your LAN | Wi-Fi (Claude Code hooks) | Status, approve/deny, **macros**, **remote stop** |
+![ClaudeStick screens](docs/screens.png)
 
-Both work at once. Approvals from either source queue on the same screen. A **phone page** served by the Stick (`http://<stick-ip>:7880/?t=<token>`) mirrors everything: approve/deny, answer questions, tap macros, stop, and type free-text instructions.
+> **Status: early release.** The firmware is feature-complete and is developed against an automated suite (hook, installer and firmware-logic tests, plus a real compile in CI), but on-device behavior is still being validated on StickS3 hardware. Please [open an issue](../../issues) if something misbehaves.
 
-## Remote mode
+## What it does
 
-Set it in the menu (hold B → *remote*), on the phone page, or in settings: **auto** (default), **on**, or **off**. In auto it follows where you last answered: an answer from the Stick or phone turns it on, and typing a prompt in the terminal turns it off.
+- **Approvals:** every permission prompt appears on the Stick. Allow, deny (optionally by voice, with a reason), or "always allow" with a rule that fits the request. Dangerous commands get a red card and a deliberate double-press.
+- **Live status:** one row per Claude session (`folder@branch`) with a spinner, elapsed time, Claude's to-do progress, and a corner buddy that reacts to what's happening.
+- **Usage at a glance:** context fill, 5-hour and 7-day plan limits (Pro/Max), session cost and model.
+- **Macros and remote mode:** "Continue", "Next phase", "Run tests + fix", your own. In remote mode Claude is told you're on a tiny device and asks short multiple-choice questions you answer with a button.
+- **Push-to-talk:** hold a button, speak, confirm; the text goes to Claude (needs any OpenAI-compatible speech-to-text server).
+- **Phone page and push alerts:** a web page served by the Stick mirrors everything, and [ntfy](https://ntfy.sh) notifications carry Approve/Always/Deny buttons.
+- **Updates over Wi-Fi:** the Stick offers new versions with a changelog, installs them in one press, and rolls back by itself if a build won't boot.
 
-| | Remote mode **ON** (away from desk) | Remote mode **OFF** (at desk, default) |
-|---|---|---|
-| Claude is told | You're on a 2-button device: ask decisions with multiple-choice questions, keep summaries short, end each turn with `Options: a \| b \| c`, batch risky steps | Back to normal |
-| Claude's multiple-choice questions | Shown as a card on the Stick/phone; your pick goes back as the answer | Normal terminal UI |
-| When Claude finishes | Done menu: Claude's own suggested options first, then your macros, plus free text from the phone (waits up to 10 min) | No menu, never blocks your keyboard |
-| Approvals | Wait up to 10 min on Stick/phone (+ phone push if ntfy is set) | Wait 20 s, then the normal terminal prompt |
+## What you need
 
-The mode switch reaches Claude at the next hook (tool result, prompt, or Done-menu pick), and only once per change.
+- An **M5Stack StickS3** (the K150, with the 1.14" screen) and a USB-C **data** cable.
+- **Desktop Chrome or Edge** for the web flasher.
+- **Python 3** on each machine where you run `claude` (the hook is a single standard-library script).
+- Optional: a speech-to-text server for voice, an ntfy topic for phone alerts.
 
-## Screen and buttons
+## Quick start
 
-The UI is a little terminal pane. Content uses the full width, with a small buddy face in the top-right corner and key hints on the bottom border. The face reacts: `(v.v)` busy while Claude works, `(O.O)` when it needs you, `(^o^)` when it finishes, `(@.@)` on errors, hearts when you approve, and a tiny mood word under it. When nothing is going on (no sessions), the Stick shows the full-size species buddy instead, one of Anthropic's 18 animated ASCII buddies (from claude-desktop-buddy). **Menu → buddy** opens a picker. Previews are in `docs/screens.png`, `docs/phone.png` and `docs/buddies.png`.
+1. **Flash.** Open the web flasher: <https://soupscode.github.io/ClaudeStick-S3/> (a fork publishes its own at `https://<owner>.github.io/<repo>/`). Click **Install** (accept *erase* on the first install), then **Connect to Wi-Fi**, then **Visit device**. No computer handy? A fresh Stick opens a hotspot named `ClaudeStick-XXXX`; join it from your phone and the setup page appears.
+2. **Set up.** The page at `http://<stick-ip>:7880/setup` asks for your time zone (detected for you), a name, a buddy, volume and a few options. The Stick shows nothing to configure on its own screen.
+3. **Connect your machines.** The last step of setup prints one command with your IP and token filled in; run it on every machine where you use `claude`:
 
-Reading the screen:
+   ```bash
+   curl -s http://<stick-ip>:7880/install.py | python3 - --host <stick-ip> --port 7880 --token <token>
+   ```
 
-- **Top bar:** title tab on the left; Wi-Fi bars, Bluetooth (blue when connected), battery gauge (green while charging) and the clock on the right.
-- **Bottom bar:** the buttons that do something right now, drawn as key caps.
-- **Home:** a spinner and elapsed time (`tool 12s`) on working sessions, `done 3m` once finished, the to-do progress, and the usage strip along the bottom: context of the focused session and your 5-hour and 7-day plan limits (see below).
-- **Cards:** shell commands start with a green `$` and wrap with a hanging indent (long paths break after `/`, `_`, `-`). A **red border** means danger.
-- **Text:** the Stick's font is ASCII only, so smart quotes, accents and emoji are shown as plain equivalents (`'`, `e`, `?`). What Claude receives back is never altered.
+   It backs up `~/.claude/settings.json`, adds its hooks next to yours, keeps any status line you already have, and is safe to re-run. `--test` re-checks the connection; `--uninstall` removes everything it added.
+4. **Claude desktop app (optional).** Help → Troubleshooting → Enable Developer Mode → Developer → Open Hardware Buddy… → Connect, pick your Stick, enter the 6-digit code it shows. The desktop gives status and approve/deny; macros and the rest need the CLI hooks.
+5. **Check it works.** On the Stick: **menu → hardware test** shows the buttons, tilt, battery, Wi-Fi and Bluetooth live. Then trigger a Claude Code approval.
 
-**A** = front button, **B** = side button, **P** = power button (short press), *hold* ≈ 0.7 s, *2x* = double-press within 0.35 s.
+## Using it
 
-On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
+**A** is the front button, **B** the side button, **P** the power button (short press); *hold* is about 0.7 s and *2x* a double-press within 0.35 s. Hold A is always **talk**.
 
 | Screen | A | 2x A | hold A | B | hold B | P |
 |---|---|---|---|---|---|---|
-| Approval | allow | **always allow** (writes a permission rule) | **deny + say why** | deny | **answer at keyboard** | answer at keyboard |
-| Approval, **DANGER** (red) | (nudge) | allow once | deny + say why | deny | answer at keyboard | answer at keyboard |
-| Question / Done menu | pick | — | **talk** (spoken reply) | next | dismiss | previous |
-| Home | **session details** | — | **talk to Claude** | menu | menu | — |
-| Session details | back | — | talk to this session | next session | back | previous session |
-| Menu / lists | select | — | — | next | back | previous |
-| Voice result | send | — | redo | discard | discard | — |
+| Approval | allow | **always allow** | **deny + say why** | deny | **answer at keyboard** | answer at keyboard |
+| Approval, **danger** (red) | hint only | allow once | deny + say why | deny | answer at keyboard | answer at keyboard |
+| Question / Done menu | pick | | **talk** | next | dismiss | previous |
+| Home | **session details** | | **talk to Claude** | menu | menu | |
+| Session details | back | | talk to this session | next session | back | previous session |
+| Menu / lists | select | | | next | back | previous |
+| Voice result | send | | redo | discard | discard | |
 
-- **Always allow** remembers a rule that fits the request:
-  - `Bash(git status *)` for this project (`.claude/settings.local.json`)
-  - auto-accept edits for the session
-  - a `WebFetch` domain
-  - an MCP tool
+On cards that offer *always allow*, a single A waits 0.35 s to see whether a second press follows. A hint bar along the bottom always shows what the buttons do right now. **Menu → button help** lists them on the device.
 
-  The card's last line shows exactly what will be remembered. It isn't offered for compound shell commands or dangerous ones.
-- **Single A on a card that offers "always"** waits 0.35 s to see if a second press follows, so plain approvals there are a hair slower. Cards without "always" allow instantly.
-- **Deny + say why:** hold A on an approval, say what Claude should do instead, then A. Claude gets the approval denied with your words as the reason. Same as **Deny + note** on the phone. Wi-Fi (CLI) sessions only.
-- **DANGER cards** (red) need a double-press to allow, and never offer "always". Triggers include:
-  - `rm -rf`, force pushes, `git reset --hard`
-  - `zfs`/`zpool destroy`, `pct`/`qm destroy`
-  - `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`
-  - stopping SSH, network or Proxmox services
-  - edits to `/etc`, `~/.ssh` or `.env`
+### Approvals
 
-  Edit approvals show a red/green diff.
-- **Tilt to scroll:** tip the Stick forward or back on long commands. Use the serial command `tilt flip` or `tilt off` if it feels wrong.
-- **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy (picker) · text style (code/classic) · clock (12/24-hour) · button help · info · new token (hold A) · re-run setup.
-- **Wi-Fi bars:** 4 bars at -55 dBm or better, 3 to -65, 2 to -75, otherwise 1 (red below -82). The reading is sampled once a second and smoothed, and bars change with a little hysteresis so they don't flicker. **Menu → info** shows the dBm.
-- **Text style:** *code* (default) keeps the same 6x8 cell as *classic* but has a slashed zero, distinct `1`/`l`/`I` and cleaner punctuation. The art is in `tools/gen_font.py`.
+- **Always allow** remembers a rule that fits: `Bash(git status *)` for this project, auto-accept edits for the session, a `WebFetch` domain, or an MCP tool. The card's last line shows exactly what will be remembered. It is never offered for compound shell commands or dangerous ones.
+- **Danger cards** (red border) cover `rm -rf`, force pushes, `git reset --hard`, `zfs`/`zpool destroy`, `pct`/`qm destroy`, `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`, stopping SSH or network services, and edits to `/etc`, `~/.ssh` or `.env`. These are heuristics, not a security boundary. Review `.claude/settings.local.json` now and then.
+- **Deny + say why:** hold A, say what Claude should do instead, press A. Claude gets the denial with your words. The phone has a matching **Deny + note** button.
+- **Edits** show a red/green diff; long text scrolls when you tilt the Stick.
 
-### Session details: to-do list and tokens
+### Remote mode
 
-Tap A on Home to see the focused session:
+Set it from the menu, the phone page or settings: **auto** (default), **on**, or **off**. Auto follows where you last answered: an answer from the Stick or phone turns it on, typing in the terminal turns it off.
 
-- **To-do list:** progress bar, `x` done, `>` current step (orange), `-` pending. Tilt to scroll. Home shows `2/7 <current step>` under each session.
-- **Tokens:** `tok` = everything the session used (input, output, cache reads and writes); `ctx` = how full the context is right now. **Menu → info** and the phone header show today's total across all CLI sessions; the phone also breaks out input, output and cache.
-- **Plan done:** when Claude ticks off its last to-do, the Stick chimes and the buddy celebrates; in remote mode you also get a phone push (ntfy).
+| | Remote **on** (away from the desk) | Remote **off** (at the desk) |
+|---|---|---|
+| Claude is told | You're on a 2-button device: ask with multiple-choice questions, keep summaries short, end each turn with `Options: a \| b \| c`, batch risky steps | Back to normal |
+| Claude's questions | A card on the Stick or phone; your pick is the answer | The normal terminal dialog |
+| When Claude finishes | A Done menu: Claude's suggestions, then your macros (waits up to 10 min) | Nothing; never blocks your keyboard |
+| Approvals | Wait up to 10 min on the Stick/phone (plus an ntfy push if configured) | Wait 20 s, then the normal terminal prompt |
 
-Claude only keeps a to-do list when its to-do tools are loaded, and newer Claude models don't load them by default. The installer sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in `~/.claude/settings.json` for you unless you already set it either way. Pass `--no-todo-tools` to skip that; uninstall removes it only if the installer added it. Tokens work either way: the hook reads them from the session transcript.
+Claude following the remote-mode style is an instruction, not a guarantee; if it skips the `Options:` line the Done menu just shows your macros.
 
-### Usage and plan limits
+### Sessions, to-do list and usage
 
-The strip along the bottom of Home and Session details reads `ctx 42%  5h 63%  7d 28%`: how full the focused session's context is, then how much of your 5-hour and 7-day plan windows you've used (green, amber over 70%, red over 90%). Session details also shows the reset countdowns (`5h 63% 2h14m`), the session cost, and the model.
+Every terminal with the hooks shows up on Home as `folder@branch` (set `CLAUDESTICK_NAME` to label one yourself). Tap A to open the focused session: Claude's to-do list with a progress bar, tokens used, context fill, 5-hour and 7-day limits with reset countdowns, cost and model. **Menu → tie to session** pins one session so the Stick only answers that one and every other session falls through to its own terminal. When Claude ticks off its last to-do item the Stick chimes (and sends an ntfy push in remote mode).
 
-These numbers only exist in Claude Code's *status line* data, which hooks never see, so the installer sets a small status-line command:
-
-- If you **already have a status line**, it is kept: the installer wraps it, runs it with the same input, and prints its output unchanged. **Uninstall restores it.**
-- If you don't, the installer adds one that prints `ctx 42% | 5h 63% | 7d 28%`.
-- `--no-statusline` skips all of this (the Stick then shows tokens only).
-- Plan limits are Pro/Max only and appear after the first response; API-key users get context % and cost but no limits. Limits are account-wide, so any session updates them; they dim when no session has reported for 15 minutes. If the Stick's clock isn't set, reset countdowns are hidden.
+- **To-do list:** Claude only keeps one when its to-do tools are loaded, and newer models don't load them by default, so the installer sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` unless you've decided either way (`--no-todo-tools` skips it).
+- **Plan limits:** these exist only in Claude Code's status-line data, so the installer sets a small status-line command. An existing status line is wrapped and keeps printing exactly what it did; uninstall restores it. Without one it prints `ctx 42% | 5h 63% | 7d 28%`. `--no-statusline` skips this and the Stick shows tokens only. Limits are Pro/Max only and appear after the first response; they dim after 15 minutes without an update.
 
 ### Push-to-talk
 
-Hold A, speak (up to 20 s), and release. The Stick sends the audio to a speech-to-text server, shows you the text, and A sends it. It answers the Done/Question card if one is up; otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works. Run [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network, in a container if you like; `Systran/faster-whisper-small` is fine on CPU. Then set the URL under **settings → voice**.
+Hold A, speak (up to 20 s), release, review the text, press A to send. It answers a pending Done/Question card, otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works; [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network is a good choice, and `Systran/faster-whisper-small` is fine on a CPU. Set the URL under **settings → voice**.
 
-### Choosing the session
+### Phone page
 
-Every terminal with the hooks installed shows up on Home, named `folder@branch` (the branch is left off for main/master). Set `CLAUDESTICK_NAME=whatever` before `claude` to label a session yourself. Two sessions in the same folder get a `#abcd` suffix.
+Open `http://<stick-ip>:7880/?t=<token>` once and add it to your home screen. It approves, denies, answers questions, taps macros, stops a session and sends free text. For use away from home, put the Stick and your phone on a VPN such as Tailscale, or use Claude Code's built-in Remote Control to type into a session from the Claude app.
 
-- **A** on Home opens the focused session (underlined); **B / P** there move the focus. The menu's Stop and macros, and the phone's default target, all go to the focused session.
-- **Menu → tie to session** pins one session (`*`). The Stick then only answers that session: approvals, questions and Done menus from other sessions fall straight through to their own terminals. Choose *all sessions* to unpin. The phone page has the same Pin/Unpin buttons.
+### Settings
 
-## First flash checklist
+Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Every machine's hook fetches these from the Stick, so you edit them once: macros (`label | instruction`, up to 10), approval waits, the Done menu mode, voice, ntfy, time zone and clock style, text style, volume, tilt, and firmware updates. The menu on the Stick also has the common toggles (remote mode, buddy, text style, 12/24-hour clock, flip screen).
 
-1. Open the flasher in **desktop Chrome or Edge** and plug the Stick in with a **data** USB-C cable.
-2. **Install**, then accept *erase* on the first install, then **Connect to Wi-Fi**, then **Visit device**.
-   - **No serial port listed:** try another cable.
-   - **Flashing fails:** hold the side button until the green LED blinks (download mode), then retry.
-3. Finish setup on the page that opens. Then **menu → hardware test**:
-   - A, B and PWR light up when pressed (if PWR doesn't, use B/A for lists; nothing else depends on it)
-   - accel numbers move when you tilt it
-   - A beeps
-   - battery and Wi-Fi look sane
-   - "last reset: power on"
-4. **Upside down?** Use menu → *flip screen*. If tilt scrolls the wrong way, run `tilt flip` in *Logs & Console*.
-5. **Title says `claudestick:safe`?** Bluetooth was turned off because the Stick crashed on boot. Open *Logs & Console* from the flasher page (no tools needed) and send me what it prints, plus the "last reset" line from the hardware test.
-6. Run the install command on your machines, then trigger a Claude Code approval to test it end to end.
+## Updates
 
-*Logs & Console* in the flasher dialog doubles as the serial terminal: `info`, `flip`, `tilt flip`, `wifi <ssid> <pass>`, `tz <POSIX rule>`, `clock 12|24`, `font 0|1`.
+The Stick checks your update source (the flasher site) 90 s after boot and every 6 hours, waiting for a quiet moment. A newer version shows **update available!** with the changelog and three choices: **update now**, **remind me later** (24 h), **skip this version**. *Menu → check for updates* checks on demand. Downloads are HTTPS verified against an embedded Mozilla root bundle. A boot only counts as good after 20 s of running; three bad boots in a row switch back to the previous firmware and skip the failed version. Each machine's hook also updates itself to match the Stick. If the Stick's IP changes, the hook finds it again by its device id.
 
-## Setup
+## Troubleshooting and recovery
 
-### 1. Get the web flasher online (once)
+- **No serial port in the flasher:** try another cable; it must carry data.
+- **Flashing fails:** hold the side button until the green LED blinks (download mode), then retry.
+- **Upside down:** menu → *flip screen*. If tilt scrolls the wrong way, run `tilt flip` in the flasher's *Logs & Console*.
+- **Title says `claudestick:safe`:** Bluetooth was switched off because the Stick crashed repeatedly on boot. Open *Logs & Console* and run `info`; the "last reset" line says why. Include it in a bug report.
+- **A machine can't reach the Stick:** re-run the install command with `--test`; it says whether the Stick answers and whether the token is accepted. Check that both are on the same network. If the IP changed, the hook finds the Stick again by its device id at the next prompt.
+- **Serial commands** (*Logs & Console* or any serial monitor): `info`, `wifi <ssid> <pass>`, `token <t>`, `name <n>`, `tilt on|off|flip`, `flip`, `tz <POSIX rule>`, `clock 12|24`, `font 0|1`, `setup`, `forget`, `reboot`.
+- **Hold B at power-on** starts in safe mode (no Bluetooth); **hold A+B at power-on** forgets Wi-Fi and reruns setup.
+- **You can't brick it with firmware.** The ESP32-S3's first-stage bootloader is in ROM, so download mode (hold the side button while plugging in USB) always works. From there, flash again from the web flasher, `pio run -t upload`, or erase with `esptool.py --chip esp32s3 erase_flash`. This firmware never touches eFuses (secure boot or flash encryption), the only way to lock an ESP32 permanently.
 
-The flasher page is `web/`. It needs a compiled firmware image next to it. Pick one:
+## Privacy and security
 
-- **GitHub (recommended):** push this repo to GitHub, then in Settings → Pages set Source to **GitHub Actions**. `.github/workflows/firmware.yml` compiles the firmware on every push and publishes the flasher at `https://<you>.github.io/<repo>/`. The compiled `.bin` is also attached to each run as an artifact.
-- **Local:** `pip install platformio "esptool<5"`, then run `./tools/build_web.sh` and `python3 -m http.server -d web 8000`. Add `CS_UPDATE_URL=<your flasher URL>` to bake the update source in; it can also be set in settings. Open `http://localhost:8000`; localhost counts as secure, so USB flashing works.
+Nothing leaves your network except what you configure: update checks go to your update source, voice audio to your speech-to-text server, ntfy messages to your ntfy server. The Stick and the hooks talk over **plain HTTP with a shared token**, so keep the Stick on a trusted network. Until setup is finished, `/setup` is open to anyone on the network or hotspot so it can show you the token; finish setup promptly. Firmware updates are not code-signed: they are trusted because they come from your update source over verified HTTPS, so protect the repo and site that serve them. See [SECURITY.md](SECURITY.md).
 
-ESP Web Tools is vendored in `web/vendor/`, so the page has no CDN dependency.
+## How it works, and developing it
 
-### 2. Flash + Wi-Fi (Chrome or Edge on desktop)
+The hooks POST events to the Stick, which polls rather than holds connections open; plan limits arrive through the status line. The design, API and hook outputs are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). To build, test, release or contribute, see [CONTRIBUTING.md](CONTRIBUTING.md). You can try everything without hardware: `python3 tools/mock_device.py --token test123` serves the Stick's API, phone page and setup wizard on your machine.
 
-Plug the Stick in with a data cable and open the flasher. Click **Install**, then **Connect to Wi-Fi** (sent over USB with the Improv protocol), then **Visit device**.
+Fork it freely: CI bakes `https://<owner>.github.io/<repo>/` into the firmware as its update source, so a fork's Sticks update from the fork. Enable Pages (Source: GitHub Actions), push, and the flasher and updates work. Change the copyright holder in `LICENSE` and the wording in `web/index.html`.
 
-No computer? A fresh Stick opens a hotspot named `ClaudeStick-XXXX`. Join it from your phone and the setup page pops up.
+## Credits and license
 
-### 3. First-time setup (the Stick's own page)
-
-`http://<stick-ip>:7880/setup` covers:
-
-- **Time zone & clock:** your browser's zone is detected and applied automatically (change it from the list if it's wrong). The Stick sets its clock over the internet, follows daylight saving by itself, and shows 12-hour time (`8:59p`); untick the box for 24-hour. With no internet on the Stick's network, this page sets the clock for you.
-- **Name:** shows in Claude desktop's Bluetooth list, always prefixed `Claude-`.
-- **Buddy:** previews live on the Stick as you pick.
-- **Settings:** text style, volume, tilt, and whether to start in remote mode.
-
-The last step prints, with your IP and token filled in:
-
-```bash
-curl -s http://<stick-ip>:7880/install.py | python3 - --host <stick-ip> --port 7880 --token <token>
-```
-
-Run that on each machine where you use `claude`. The Stick serves the installer and hook itself, so no checkout is needed. The step also gives you the phone-remote link and the desktop pairing steps. The installer backs up `~/.claude/settings.json`, adds its hooks next to any you already have, and is safe to re-run. Use `--test` to re-check and `--uninstall` to remove.
-
-The Stick only shows a "go here to set me up" screen until this is done. Its only button there is *hold B: skip setup*, for serial/CLI users. Afterwards, `/setup` needs `?t=<token>`. **Menu → re-run setup** reopens it. Holding **A+B while powering on** forgets Wi-Fi and starts over.
-
-### 4. Desktop app (optional)
-
-Claude desktop → **Help → Troubleshooting → Enable Developer Mode** → **Developer → Open Hardware Buddy…** → Connect → pick your Stick, then enter the 6-digit code it shows.
-
-### Manual / serial fallback
-
-`pio run -t upload` from `firmware/`, then in `pio device monitor`: `wifi <ssid> <pass>`, `info`, `setup`, `tilt on|off|flip`, `forget`, `reboot`.
-
-### Recovery: you can't brick it with firmware
-
-The ESP32-S3's first-stage bootloader is in mask ROM, so download mode always works no matter what's flashed. To enter it, plug in USB, then hold the side button until the internal green LED blinks. From there:
-
-- `pio run -t upload` again, or
-- restore stock: M5Burner → StickS3 → factory firmware → Burn, or
-- `pip install esptool && esptool.py --chip esp32s3 erase_flash`, then flash anything.
-
-This firmware never touches eFuses (secure boot / flash encryption), which is the only way to permanently lock an ESP32.
-
-## Settings (on the Stick)
-
-Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Every machine's hook fetches these settings from the Stick (cached for 60 s), so you edit them once:
-
-- **Macros:** `label | instruction` per line, max 10.
-- **Approvals:** desk wait (20 s), remote wait (600 s), Done menu (remote / always / never), and whether Claude's multiple-choice questions go to the Stick.
-- **Voice:** transcription URL, model, language, API key.
-- **Phone alerts:** an [ntfy](https://ntfy.sh) topic and token, with a *send test* button. In remote mode, approvals arrive as notifications with **Approve / Always / Deny** buttons. Those buttons call the Stick directly, so your phone must reach it (home Wi-Fi or Tailscale).
-- **Firmware:** *check for update* reads `ota.json` from your flasher site and installs over Wi-Fi with a progress bar. You can also upload a `claudestick-app.bin` by hand.
-
-### Updates
-
-- **The prompt:** the Stick checks `<update source>/ota.json` 90 s after boot and every 6 h. Downloads are HTTPS, verified against an embedded Mozilla root bundle (`tools/gen_ca_bundle.sh` regenerates it). A newer version shows **update available!** with that version's bullets from `CHANGELOG.md`, and three choices: **update now** · **remind me later** (24 h) · **skip this version**. *Menu → check for updates* checks on demand.
-- **Rollback:** a boot only counts as good after 20 s of running. Three bad boots in a row switch back to the previous firmware, skip the failed version, and show a "rolled back" notice. No USB needed.
-- **Hooks follow the firmware:** each machine's hook compares itself with the copy the Stick serves (sha256) and replaces itself if it's out of date. It checks the hash and that the file parses before swapping.
-- **Safe timing:** background checks wait until the clock is set (HTTPS certificates have dates) and for a quiet moment: no pending approval, no button press in the last 15 s. An install first checks that there is enough free memory for the TLS handshake and says so if there isn't.
-- **Trust model:** the Stick trusts whatever your update source serves over verified HTTPS. Images are not code-signed, so protect the repo and the Pages site that serve `ota.json`. The inactive slot is the only thing an update writes, so a dropped connection or power loss mid-download leaves the running firmware untouched.
-- **Releasing:** bump `FW_VERSION` in `firmware/src/main.cpp`, add a `## x.y.z` section to `CHANGELOG.md`, and push. CI builds, runs `tools/verify_release.py` (versions agree, SHA-256 matches, the app fits the OTA slot, the partition table has two OTA slots, the update URL is baked in), then publishes; a failed check blocks the publish. Every Stick then offers the update.
-- **Your own fork:** nothing in the code is tied to one account. CI bakes `https://<owner>.github.io/<repo>/` into the firmware as the update source, so a fork's Sticks update from the fork. Enable Pages (Source: GitHub Actions), push, and the flasher and updates work. Change the copyright holder in `LICENSE`, and `web/index.html` if you want your own wording.
-
-`~/.claudestick/config.json` on each machine only holds `host`, `port`, `token` and the Stick's `device_id`. **If the Stick's IP changes**, the hook looks for it by device id (mDNS name `claudestick-xxxx.local`, then a quick sweep of the local /24) at the next prompt, then updates the file itself. Tool calls never wait on that search.
-
-## Phone
-
-- **On your LAN:** open `http://<stick-ip>:7880/?t=<token>` once and add it to your home screen; it remembers the token. Free text you type is delivered at the next Done menu (instantly if one is up) or after Claude's current step. It can't start a turn while Claude is completely idle; use Remote Control for that.
-- **Away from home:** use Claude Code's built-in **Remote Control** (`/remote-control`, or enable it for all sessions in `/config`) to type into the session from the Claude app. Or put the Stick's IP on Tailscale with your phone.
-
-## How it works
-
-The hooks POST events to the Stick (`/event`, `/permission`, `/stop`). Approvals and cards are polled, so nothing holds a connection open. The phone page uses `/state` and `/act`. Every API call carries an `X-Token` header. Hook outputs used:
-
-- `PermissionRequest` → `decision.behavior` allow/deny, plus `updatedPermissions` for *always allow*
-- `Stop` → `decision: "block"` + `reason` (this is how macros and phone text make Claude continue)
-- `PostToolUse` / `UserPromptSubmit` / `SessionStart` → `additionalContext` (mid-run macros, remote-mode instructions)
-- `PreToolUse` → `continue: false` (remote stop); for `AskUserQuestion` in remote mode, `deny` + a reason carrying your answers, so Claude gets them without the terminal dialog
-
-## Test without hardware
-
-```bash
-python3 tools/mock_device.py --token test123     # a / b / k / d / s / m N / r / t TEXT at the prompt
-# phone page: http://localhost:7880/?t=test123   setup wizard: http://localhost:7880/setup
-python3 install.py --host 127.0.0.1 --token test123
-```
-
-## Notes / limits
-
-- `firmware/src/tinyfont.h` is derived from the 3x5 "Tom Thumb" font (BSD 3-clause, license reproduced in the file) and is used for the mood word in the corner. Regenerate with `tools/gen_tinyfont.py`.
-- Macros, Stop, questions and remote mode only apply to CLI (hook) sessions. The desktop Bluetooth protocol only allows approve/deny.
-- Claude following the remote-mode style (questions, `Options:` line) is an instruction, not a guarantee. If it skips the line, the Done menu just shows your macros.
-- Desktop folder-push (custom GIF pets) isn't supported. The desktop will report that the device declined.
-- Security: the HTTP API is plain HTTP with a shared token, so keep the Stick on a trusted VLAN. Before setup is finished, `/setup` is open to anyone on the network (and on the hotspot) so it can show you the token. Finish setup promptly.
-- `firmware/src/ble_bridge.*` and `firmware/src/buddies/*` are unmodified from [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) (MIT). `buddy.cpp` is adapted from it, and `M5StickCPlus.h` is a small shim so the species render on M5Unified.
-- The PWR short press reads the StickS3 power chip through M5Unified. A long PWR hold is still the hardware power-off.
-- **Battery:** the screen dims after 1 min and turns off after 3 min, and the CPU drops to 80 MHz while dimmed. Wi-Fi and Bluetooth stay on so hooks and the desktop can still reach the Stick. Expect several hours unplugged; it's meant to live on a cable or magnetic dock.
-- Always-allow rules and DANGER patterns are heuristics. Review `.claude/settings.local.json` now and then.
-
-MIT License.
+MIT, see [LICENSE](LICENSE). `firmware/src/ble_bridge.*` and `firmware/src/buddies/*` come unmodified from [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) (MIT); `buddy.cpp` is adapted from it. `firmware/src/tinyfont.h` is derived from the 3x5 "Tom Thumb" font (BSD 3-clause, license in the file). The web flasher uses [ESP Web Tools](https://github.com/esphome/esp-web-tools), vendored in `web/vendor/`. Built on [M5Unified](https://github.com/m5stack/M5Unified), [M5GFX](https://github.com/m5stack/M5GFX) and [ArduinoJson](https://arduinojson.org).

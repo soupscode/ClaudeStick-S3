@@ -9,6 +9,7 @@ Checks that ota.json, manifest.json and the firmware images agree with each othe
     and carries the same app image
   * the version string, and the baked-in update URL (CS_UPDATE_URL env), are inside the app image
   * the bridge's VERSION (bridge/claudestick_bridge.py), when present, equals FW_VERSION
+  * the telemetry collector's VERSION (telemetry/claudestick_telemetry.py), when present, equals FW_VERSION
   * the update notes for this version aren't empty (warning only)
 
 Usage: tools/verify_release.py [--root DIR]      Exit status 1 on any error. Prints GitHub annotations.
@@ -47,6 +48,13 @@ if os.path.exists(bridge_src):
     bm = re.search(r'^VERSION\s*=\s*"([^"]+)"', read(bridge_src, 'r') or '', re.M)
     if not bm or bm.group(1) != version:
         err(f'bridge VERSION {bm.group(1) if bm else None!r} != FW_VERSION {version!r}')
+
+# ditto the telemetry collector
+tel_src = path('telemetry', 'claudestick_telemetry.py')
+if os.path.exists(tel_src):
+    tm = re.search(r'^VERSION\s*=\s*"([^"]+)"', read(tel_src, 'r') or '', re.M)
+    if not tm or tm.group(1) != version:
+        err(f'telemetry collector VERSION {tm.group(1) if tm else None!r} != FW_VERSION {version!r}')
 
 ota = None
 raw = read(path('web', 'ota.json'), 'r')

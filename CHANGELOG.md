@@ -2,6 +2,11 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.2
+- Opt-in telemetry: off by default, hidden until a destination is set, see docs/TELEMETRY.md
+- Self-hosted telemetry collector (telemetry/) with a one-command quickstart
+- Settings: telemetry checkbox and destination; nothing sent until both are set
+
 ## 0.9.1
 - Built for being away from your desk: setup asks for your hotspot and bridge right away
 - Remote mode "always on" is the bridge's default, only while your Stick is connected

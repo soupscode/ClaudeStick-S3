@@ -47,8 +47,11 @@
 #ifndef CS_UPDATE_URL          // set by CI to the GitHub Pages URL of the web flasher
 #define CS_UPDATE_URL ""
 #endif
+#ifndef CS_TELEMETRY_URL       // optional: where opt-in telemetry reports go (see docs/TELEMETRY.md)
+#define CS_TELEMETRY_URL ""
+#endif
 
-static const char*    FW_VERSION   = "0.9.1";
+static const char*    FW_VERSION   = "0.9.2";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -145,6 +148,16 @@ static struct {
 
 static struct { uint32_t appr = 0, deny = 0; } stats;
 
+// Opt-in telemetry: a window of counts since the last successful report (telemetry.inc resets
+// it to zero on success). Never holds anything typed, any tool/approval text, or audio.
+struct TelCounters {
+  uint32_t appr = 0, deny = 0, always = 0, danger = 0;
+  uint32_t macroTaps = 0, doneChoose = 0, doneDismiss = 0;
+  uint32_t voiceOk = 0, voiceFail = 0, sessionsSeen = 0;
+  uint32_t remoteOnMs = 0, remoteOffMs = 0;
+};
+static TelCounters tel;
+
 static Preferences prefs;
 static WebServer   server(HTTP_PORT);
 static WebServer   portal(80);          // hotspot captive-portal redirector
@@ -172,6 +185,8 @@ struct Settings {
   String  ntfyUrl, ntfyToken;
   String  sttUrl, sttModel = "whisper-1", sttKey, sttLang;
   String  updateUrl = CS_UPDATE_URL;
+  bool    telemetryOn = false;          // opt-in; see docs/TELEMETRY.md for exactly what a report contains
+  String  telemetryUrl = CS_TELEMETRY_URL;
 } conf;
 static uint32_t lastStickAt = 0, lastKbdAt = 0;   // auto remote mode inputs
 static int32_t     tzOffset = 0;       // fixed offset from the hook / desktop, used only until a time zone is chosen
@@ -225,6 +240,7 @@ static Session* findSession(const String& id, bool create) {
   sessions[i] = Session();
   sessions[i].used = true;
   sessions[i].id = id;
+  tel.sessionsSeen++;
   return &sessions[i];
 }
 
@@ -372,6 +388,7 @@ static void configToJson(JsonDocument& o, bool secrets) {
   o["ntfy_url"] = conf.ntfyUrl;
   o["stt_url"] = conf.sttUrl; o["stt_model"] = conf.sttModel; o["stt_language"] = conf.sttLang;
   o["update_url"] = conf.updateUrl;
+  o["telemetry"] = conf.telemetryOn; o["telemetry_url"] = conf.telemetryUrl;
   if (secrets) { o["ntfy_token"] = conf.ntfyToken; o["stt_key"] = conf.sttKey; }
   else { o["ntfy_token_set"] = conf.ntfyToken.length() > 0; o["stt_key_set"] = conf.sttKey.length() > 0; }
   JsonArray m = o["macros"].to<JsonArray>();
@@ -393,6 +410,8 @@ static void configFromJson(JsonDocument& in) {
   if (in["stt_key"].is<const char*>()) conf.sttKey = in["stt_key"].as<const char*>();
   if (in["stt_language"].is<const char*>()) conf.sttLang = in["stt_language"].as<const char*>();
   if (in["update_url"].is<const char*>()) conf.updateUrl = in["update_url"].as<const char*>();
+  if (in["telemetry"].is<bool>()) conf.telemetryOn = in["telemetry"];
+  if (in["telemetry_url"].is<const char*>()) conf.telemetryUrl = in["telemetry_url"].as<const char*>();
   if (in["macros"].is<JsonArray>()) loadMacros(in["macros"].as<JsonArrayConst>(), macros, nMacros);
   updateRemote();
 }
@@ -568,9 +587,11 @@ static void decide(Approval* a, int8_t d, bool fromStick = true) {
   if (!a) return;
   if (d == D_ALWAYS && (a->src == SRC_BLE || !a->always.length())) d = D_ALLOW;   // not offered: plain allow
   if (a->bridge && !bridgeDecide(a, d)) return;   // couldn't reach the bridge: the card stays up
-  if (d == D_ALLOW || d == D_ALWAYS) { stats.appr++; heartUntil = millis() + 2500; }
+  if (d == D_ALLOW || d == D_ALWAYS) { stats.appr++; tel.appr++; heartUntil = millis() + 2500; }
+  if (d == D_ALWAYS) tel.always++;
+  if (a->risk == "high") tel.danger++;
   if (d == D_SKIP) noteKeyboard(); else if (fromStick) noteStick();
-  if (d == D_DENY)  stats.deny++;
+  if (d == D_DENY)  { stats.deny++; tel.deny++; }
   if (a->src == SRC_BLE) {
     if (d != D_SKIP) {
       JsonDocument j;
@@ -917,8 +938,9 @@ static bool deliverText(Session* s, const String& text) {
 
 // Answer a Done/Question card: here (the hook polls for it) or on the bridge it came from.
 static bool stopResult(StopReq* r, int result) {
-  if (r->bridge) { if (!bridgeStopResult(r, result)) return false; r->used = false; return true; }
-  r->result = result;
+  if (r->bridge) { if (!bridgeStopResult(r, result)) return false; r->used = false; }
+  else r->result = result;
+  if (result == -2) tel.doneDismiss++; else tel.doneChoose++;
   return true;
 }
 
@@ -964,7 +986,7 @@ static void hAct() {
                   (action == "macro" && index >= 0 && index < nMacros) ? macros[index].text : String();
     if (!s) ok = false;
     else if (action == "stop") ok = sessionStop(s);
-    else ok = deliverText(s, text);
+    else { if (action == "macro") tel.macroTaps++; ok = deliverText(s, text); }
   } else if (action == "pin") {
     pinned = sid.length() && findSession(sid, false) ? sid : String();
   } else if (action == "remote") {
@@ -1455,6 +1477,7 @@ static void hSetupInfo() {
   out["bt_on"] = btPref;
   out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
   out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24; out["clock"] = clockStr(); out["font"] = textStyle;
+  out["telemetry_available"] = conf.telemetryUrl.length() > 0; out["telemetry"] = conf.telemetryOn;
   JsonArray b = out["buddies"].to<JsonArray>();
   uint8_t cur = buddySpeciesIdx();
   for (uint8_t i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); b.add(buddySpeciesName()); }
@@ -1583,6 +1606,7 @@ static void hSetupSave() {
   if (in["font"].is<int>()) { textStyle = in["font"].as<int>() ? 1 : 0; prefs.putUChar("font", textStyle); }
   if (in["flip"].is<bool>()) { flipped = in["flip"]; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); }
   if (in["bt"].is<bool>() && in["bt"].as<bool>() != btPref) { btPref = in["bt"]; prefs.putBool("bt", btPref); restart = true; }   // Bluetooth starts at boot
+  if (in["telemetry"].is<bool>()) conf.telemetryOn = in["telemetry"];
   if (in["remote"].is<const char*>()) { String rm = in["remote"].as<const char*>(); conf.remote = rm == "off" ? 0 : rm == "on" ? 1 : 2; }
   else if (in["remote"].is<bool>()) conf.remote = in["remote"].as<bool>() ? 1 : 2;
   saveConfig(); updateRemote();
@@ -1617,6 +1641,7 @@ static void registerSetupRoutes() {
   server.onNotFound([] { server.send(404, "application/json", "{\"error\":\"not found\"}"); });
 }
 
+#include "telemetry.inc"   // opt-in usage reporting (needs conf, tel, bridgeConfigured(), nNets above)
 #include "voice.inc"
 
 // ------------------------------------------------------------------ UI ----
@@ -2627,7 +2652,7 @@ static void buttons() {
     if (!aClick) return;
     switch (e.kind) {
       case MI_STOP:   if (s && sessionStop(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
-      case MI_MACRO:  if (s && (s->bridge ? bridgeSessionAct(s, "macro", e.arg) : deliverText(s, macros[e.arg].text))) beep(2);
+      case MI_MACRO:  if (s) { tel.macroTaps++; if (s->bridge ? bridgeSessionAct(s, "macro", e.arg) : deliverText(s, macros[e.arg].text)) beep(2); }
                       screen = SCR_HOME; menuIdx = 0; break;
       case MI_REMOTE: setRemoteSetting(conf.remote + 1); break;                       // stay in menu
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
@@ -2807,6 +2832,8 @@ void loop() {
   updateTick();
   ntpTick();
   drainTick();
+  telemetryTick();
+  telemetryRemoteTick();
   memoryWatch();
   bootHealthTick();
   buttons();

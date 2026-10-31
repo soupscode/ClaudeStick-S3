@@ -10,6 +10,7 @@ ClaudeStick is meant for a **trusted home or lab network**.
 - **Firmware updates are not code-signed.** The Stick trusts the image served by its update source over HTTPS, verified against an embedded Mozilla root bundle. Whoever controls the repo or site behind that URL controls what your Stick runs, so protect them (2FA, branch protection).
 - Anyone with the token can approve tool calls on your behalf. Treat it like a password; **menu → new token** rotates it (re-run the install command afterwards).
 - The danger-card patterns and *always allow* rules are heuristics to help you notice risky actions, not a security boundary.
+- **Telemetry is opt-in and off by default** ([docs/TELEMETRY.md](docs/TELEMETRY.md)); the checkbox is hidden until a destination is set, so turning it on takes two deliberate steps. The collector's `/report` endpoint takes no token (consistent with keeping opt-in simple), so treat it like ntfy: bound by a field allowlist, a body-size cap and a per-address rate limit, not a secret. Use HTTPS if you expose it.
 
 ## Reporting a vulnerability
 

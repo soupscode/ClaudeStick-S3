@@ -72,6 +72,9 @@ jobs:
         env:
           # Bake the Pages URL in so the Stick's settings page can update itself.
           CS_UPDATE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          # Opt-in telemetry destination (docs/TELEMETRY.md): only set if this repo (or its owner) has a
+          # CS_TELEMETRY_URL repository/organization variable. Empty by default, including for every fork.
+          CS_TELEMETRY_URL: ${{ vars.CS_TELEMETRY_URL }}
       - name: Verify release (OTA metadata, partition table, hashes)
         # Fails the build, and so blocks the deploy, if an over-the-air update would be broken.
         run: python3 tools/verify_release.py

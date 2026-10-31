@@ -47,7 +47,8 @@ DEFAULT_MACROS = [
 ]
 CONF = {"permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s": 600, "stop_menu": "remote",
         "questions_on_device": True, "remote": "auto", "ntfy_url": "", "ntfy_token": "", "stt_url": "",
-        "stt_model": "whisper-1", "stt_key": "", "stt_language": "", "update_url": "", "macros": list(DEFAULT_MACROS)}
+        "stt_model": "whisper-1", "stt_key": "", "stt_language": "", "update_url": "", "telemetry": False,
+        "telemetry_url": "", "macros": list(DEFAULT_MACROS)}
 S = {"sessions": {}, "approvals": {}, "stops": {}, "next": 1, "log": [], "pinned": "",
      "last_stick": 0.0, "last_kbd": 0.0, "ota_bytes": 0}
 SETUP = {"nets": [], "bridge": {"url": "", "tok": "", "up": False, "error": ""}, "done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
@@ -204,6 +205,7 @@ class H(BaseHTTPRequestHandler):
                                               "up": SETUP["bridge"]["up"], "error": SETUP["bridge"]["error"]},
                                    "name": SETUP["name"], "bt": SETUP["name"], "buddy": SETUP["buddy"],
                                    "volume": SETUP["volume"], "tilt": SETUP["tilt"], "bt_on": SETUP["bt_on"], "remote": CONF["remote"],
+                                   "telemetry": CONF["telemetry"], "telemetry_available": bool(CONF["telemetry_url"]),
                                    "buddies": BUDDIES, "token": TOKEN, "ip": SETUP["ip"]})
             if p == "/setup/scan":
                 return self.reply([{"ssid": "home-wifi", "rssi": -48, "secure": True},
@@ -335,6 +337,8 @@ class H(BaseHTTPRequestHandler):
                     SETUP["bt_on"], restart = b["bt"], True   # Bluetooth starts at boot
                 if isinstance(b.get("remote"), str):
                     CONF["remote"] = b["remote"]
+                if isinstance(b.get("telemetry"), bool):
+                    CONF["telemetry"] = b["telemetry"]
                 return self.reply({"ok": True, "restart": restart, "token": TOKEN, "bt": SETUP["name"],
                                    "ip": SETUP["ip"], "port": self.server.server_port})
         if not self.ok_auth():

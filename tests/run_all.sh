@@ -31,6 +31,7 @@ if [ $py -eq 1 ]; then
   run py/e2e_usage         python3 tests/py/e2e_usage.py
   run py/e2e_statusline    python3 tests/py/e2e_statusline.py
   run py/selfupdate        python3 tests/py/selfupdate.py
+  run py/telemetry         python3 tests/py/telemetry_collector_test.py
   run tools/verify_release python3 tests/py/verify_release_test.py
 fi
 
@@ -47,6 +48,7 @@ if [ $browser -eq 1 ]; then
     run browser/setup_flow     python3 tests/browser/setup_flow.py
     run browser/phone_page     python3 tests/browser/phone_page.py
     run browser/bridge_cards   python3 tests/browser/bridge_cards.py
+    run browser/telemetry_card python3 tests/browser/telemetry_card.py
   else
     echo "skip browser tests (playwright not installed)"
   fi

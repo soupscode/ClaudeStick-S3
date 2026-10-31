@@ -36,6 +36,14 @@ if url:
     if not url.endswith("/"):
         url += "/"
     info.append(f'#define CS_UPDATE_URL "{url}"')
+# Optional opt-in telemetry destination (see docs/TELEMETRY.md). Unlike CS_UPDATE_URL this is never
+# derived automatically: CI only sets it if the repo (or its owner) has a CS_TELEMETRY_URL variable,
+# so a fork reports nowhere by default even when telemetry is turned on in the UI.
+tel_url = os.environ.get("CS_TELEMETRY_URL", "").strip()
+if tel_url:
+    if not tel_url.endswith("/"):
+        tel_url += "/"
+    info.append(f'#define CS_TELEMETRY_URL "{tel_url}"')
 info_dst = os.path.join(ROOT, "src", "build_info.h")
 info_new = "\n".join(info) + "\n"
 if not os.path.exists(info_dst) or open(info_dst, encoding="utf-8").read() != info_new:

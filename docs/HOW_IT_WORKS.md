@@ -12,6 +12,7 @@ Claude desktop app <------ Bluetooth (Hardware Buddy protocol) ----+
 
 - **Firmware** (`firmware/`): Arduino/PlatformIO for the StickS3. `src/main.cpp` holds the state, HTTP API and UI; `voice.inc` push-to-talk; `update.inc` update checks, install and the boot guard; `bridge.inc` the client for a bridge; `setup_page.html` the setup wizard; `embed_files.py` embeds the installer, hook and wizard into the image at build time so the Stick can serve them.
 - **Bridge** (`bridge/claudestick_bridge.py`): the Stick's API without the hardware, for use away from home. Standard-library Python; see [REMOTE.md](REMOTE.md).
+- **Telemetry collector** (`telemetry/claudestick_telemetry.py`): receives opt-in usage reports. Standard-library Python; see [TELEMETRY.md](TELEMETRY.md).
 - **Hook** (`hooks/claudestick_hook.py`): one standard-library Python script registered for the Claude Code hook events and as the status-line command. It never blocks Claude when the Stick is unreachable (it backs off for 20 s after a failure).
 - **Installer** (`install.py`): served by the Stick, so a new machine needs only a `curl | python3`. It edits `~/.claude/settings.json` (with a backup), writes `~/.claudestick/config.json`, and restores everything on `--uninstall`.
 - **Web flasher** (`web/`): ESP Web Tools (vendored) plus `manifest.json` and `ota.json`, published to GitHub Pages by CI.
@@ -64,6 +65,10 @@ Differences from the Stick, all additive:
 
 Wi-Fi: up to four networks are kept (`nets` in preferences; the first is also in `ssid`/`pass` for older tools). With more than one, a disconnected Stick runs an asynchronous scan and joins the strongest known network, taking turns when none is in sight.
 
+## Telemetry (opt-in, off by default)
+
+`telemetry.inc` holds a window of counts (`TelCounters tel`, zeroed on a successful report) incremented at the call sites that matter — `decide()` for approvals, `stopResult()` for Done/Question cards, `findSession()` for new sessions, `voiceFail()`/the transcription success path for voice, and the two macro-tap sites — plus a POST every ~6 h (same idle-gated scheduling as update checks) once both `conf.telemetryOn` and `conf.telemetryUrl` are set. `telemetryId()` is a separate random id from `devId` (which is MAC-derived and used for mDNS), so a report carries nothing hardware-identifying. The collector (`telemetry/claudestick_telemetry.py`) enforces its own copy of the schema server-side — an unknown or mistyped field is dropped before it's stored, so a report can never carry more than `docs/TELEMETRY.md` documents even from a modified Stick. See that doc for the full field list and exactly what's never sent.
+
 ## Updates and rollback
 
 - `ota.json` (`version`, `app`, `sha256`, `notes`) and `firmware/claudestick-app.bin` are published next to the flasher. The Stick compares versions, shows the changelog bullets for that version from `CHANGELOG.md`, and installs with the ESP `Update` library over TLS verified against `firmware/data/cert/x509_crt_bundle.bin` (regenerate with `tools/gen_ca_bundle.sh`).
@@ -84,11 +89,12 @@ Screen brightness drops after 1 min and the screen turns off after 3 min; the CP
 ```
 firmware/        Arduino/PlatformIO project (src/, setup_page.html, embed_files.py, data/cert)
 bridge/          claudestick_bridge.py (+ systemd unit example)
+telemetry/       claudestick_telemetry.py (+ systemd unit example)
 hooks/           claudestick_hook.py
 install.py       installer served by the Stick
 web/             web flasher (index.html, manifest.json, vendor/)
 tools/           build_web.sh, verify_release.py, mock_device.py, gen_font.py, gen_tinyfont.py, gen_ca_bundle.sh
-tests/           py/ (hook, installer, release checks, bridge), host/ (firmware logic + screens on the host), browser/
+tests/           py/ (hook, installer, release checks, bridge, telemetry), host/ (firmware logic + screens on the host), browser/
 docs/            screenshots and this document
 .github/         CI: build, release checks, tests, Pages deploy
 ```

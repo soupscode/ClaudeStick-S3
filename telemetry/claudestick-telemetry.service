@@ -1,0 +1,25 @@
+# Example systemd unit for the ClaudeStick telemetry collector. Edit User and the paths, then:
+#   sudo cp telemetry/claudestick-telemetry.service /etc/systemd/system/
+#   sudo systemctl enable --now claudestick-telemetry
+#   journalctl -u claudestick-telemetry -f
+# Drop --trust-proxy if nothing sits in front of it; use --host 127.0.0.1 when the proxy is on the same machine.
+[Unit]
+Description=ClaudeStick telemetry collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=claudestick
+ExecStart=/usr/bin/python3 /opt/claudestick/telemetry/claudestick_telemetry.py --host 127.0.0.1 --trust-proxy
+Environment=CLAUDESTICK_TELEMETRY_DIR=/var/lib/claudestick-telemetry
+StateDirectory=claudestick-telemetry
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/claudestick-telemetry
+
+[Install]
+WantedBy=multi-user.target

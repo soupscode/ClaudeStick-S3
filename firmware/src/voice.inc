@@ -21,6 +21,7 @@ static int        voiceLevel = 0;
 
 static void voiceFail(const String& why) {
   voiceErr = why; voiceState = V_ERROR; voiceErrUntil = millis() + 3500; beep(3); dirty = true;
+  tel.voiceFail++;
 }
 
 static void writeLE(uint8_t* p, uint32_t v, int n) { for (int i = 0; i < n; i++) p[i] = (v >> (8 * i)) & 0xFF; }
@@ -162,6 +163,7 @@ static void voiceRecord() {
   if (!sttRequest(text)) { voiceFail(voiceErr.length() ? voiceErr : "speech request failed"); return; }
   if (!text.length()) { voiceFail("didn't catch that"); return; }
   voiceText = text; voiceState = V_CONFIRM; scrollLine = 0; beep(0); touch();
+  tel.voiceOk++;
 }
 
 static void voiceSend() {

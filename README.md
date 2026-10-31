@@ -57,12 +57,13 @@ Then trigger an approval in Claude Code. Only ever at your desk? Skip the bridge
 | [How to use](docs/HOW_TO_USE.md) | Buttons, approvals, remote mode, sessions and usage, push-to-talk, phone page, settings, updates, battery |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Recovery, safe mode, serial commands, "you can't brick it" |
 | [How it works](docs/HOW_IT_WORKS.md) | Architecture, hook events, HTTP API, updates and rollback |
+| [Telemetry](docs/TELEMETRY.md) | Opt-in usage reporting: exactly what's sent, running your own collector |
 | [Contributing](CONTRIBUTING.md) | Build, test, release, fork |
 | [Security](SECURITY.md) | Trust model and reporting |
 
 ## Privacy
 
-Nothing leaves your network except what you configure: update checks, voice audio and ntfy messages go only to the servers you set. The Stick and your machines talk over plain HTTP with a shared token, so keep the Stick on a network you trust; the [bridge](docs/REMOTE.md) adds HTTPS for use away from home. Details in [SECURITY.md](SECURITY.md).
+Nothing leaves your network except what you configure: update checks, voice audio, ntfy messages and (if you turn it on) anonymous usage reports go only to the servers you set. The Stick and your machines talk over plain HTTP with a shared token, so keep the Stick on a network you trust; the [bridge](docs/REMOTE.md) adds HTTPS for use away from home. Details in [SECURITY.md](SECURITY.md).
 
 ## License and credits
 

@@ -168,6 +168,7 @@ check("with the Stick connected, remote is on", snap()["remote"] is True)
 p = start({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "npm run build"}})
 a = wait_for(pending)
 check("approval reaches the Stick, with the project name", a and a[0]["project"] == "api-server@fix-auth" and a[0]["tool"] == "Bash", a)
+wait_for(lambda: NT and NT[-1]["actions"])   # the hook posts the ntfy push right after it files the approval
 check("ntfy push has Approve/Always/Deny buttons that point at the public URL",
       NT and NT[-1]["actions"].count("http,") >= 2 and
       all(x.split(",")[2].strip().startswith("https://stick.example.com/act?action=") for x in NT[-1]["actions"].split(";")) and

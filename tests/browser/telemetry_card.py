@@ -67,7 +67,10 @@ with sync_playwright() as p:
 
     pg.screenshot(path=os.path.join(SHOTS, "telemetry_card.png"), full_page=True)
 
-    # turning it off again, from settings this time, via the same FTUE-card checkbox (still present post-setup)
+    # turning it off again, from settings this time, via the same FTUE-card checkbox (still present post-setup).
+    # #smsg already reads "saved" from the first save above, so clear it first or the wait below could
+    # match that stale text instead of waiting for this save's own round trip (seen once on a slow CI runner).
+    pg.evaluate("document.getElementById('smsg').textContent = ''")
     pg.uncheck("#tel")
     pg.click("#me button:text-is('save')")
     pg.wait_for_selector("#smsg >> text=saved")

@@ -16,6 +16,7 @@ FILES = {
     "EMBED_INSTALL_PY": "install.py",
     "EMBED_HOOK_PY": "hooks/claudestick_hook.py",
     "EMBED_SETUP_HTML": "firmware/setup_page.html",
+    "EMBED_PHONE_HTML": "firmware/phone_page.html",
 }
 DELIM = "CSEMBED"
 

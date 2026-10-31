@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.8.1";
+static const char*    FW_VERSION   = "0.9.0";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -83,6 +83,10 @@ struct Session {
   // from Claude Code's status line (see the hook's --statusline)
   float    ctxPct = -1, cost = -1;
   String   modelName;
+  // mirrored from a bridge (bridge.inc) rather than reported by a hook talking to the Stick
+  bool     bridge = false;
+  uint8_t  gen = 0;
+  uint16_t planDone = 0;
 };
 
 // Plan limits are account-wide: the 5-hour and 7-day windows (Pro/Max), with reset times.
@@ -100,6 +104,7 @@ enum Decision : int8_t { D_PENDING = -1, D_DENY = 0, D_ALLOW = 1, D_SKIP = 2, D_
 
 struct Approval {
   bool     used = false;
+  bool     bridge = false;     // lives on a bridge: answer it there
   uint32_t id = 0;
   Src      src = SRC_WIFI;
   String   bleId;              // desktop prompt id
@@ -113,6 +118,7 @@ struct Approval {
 
 struct StopReq {
   bool     used = false;
+  bool     bridge = false;
   uint32_t id = 0;
   String   kind = "done";      // "done" (turn finished) or "question" (AskUserQuestion)
   String   session, project, last, title, custom;
@@ -310,10 +316,12 @@ static const char* DEFAULT_MACROS = R"JSON([
  {"label":"Commit","text":"Commit the current work with a clear, conventional commit message."}])JSON";
 
 static const char* remoteName(uint8_t r) { return r == 0 ? "off" : r == 1 ? "on" : "auto"; }
+static bool bridgeUp = false, bridgeRemote = false;   // set by bridge.inc
 
 // Effective remote mode. In auto it follows where you last answered: the Stick or
 // phone (remote) versus typing in the terminal (desk).
 static void updateRemote() {
+  if (bridgeUp) { if (bridgeRemote != remoteMode) { remoteMode = bridgeRemote; dirty = true; } return; }
   bool r = conf.remote == 1 || (conf.remote == 2 && lastStickAt > lastKbdAt);
   if (r != remoteMode) { remoteMode = r; dirty = true; }
 }
@@ -381,6 +389,7 @@ static void loadConfig() {
 static const lgfx::GLCDfont termFont = { termfont_data, termfont_info, 6, 8, 7 };
 static const lgfx::IFont* uiFont() { return textStyle ? (const lgfx::IFont*)&termFont : (const lgfx::IFont*)&fonts::Font0; }
 #include "update.inc"   // update checks, rollback, notices (needs settings + helpers above)
+#include "bridge.inc"   // remote access through a bridge at home (needs notices, TLS helpers from update.inc)
 
 // ------------------------------------------------------------ BLE side ---
 
@@ -524,6 +533,7 @@ static void pollBle() {
 static void decide(Approval* a, int8_t d, bool fromStick = true) {
   if (!a) return;
   if (d == D_ALWAYS && (a->src == SRC_BLE || !a->always.length())) d = D_ALLOW;   // not offered: plain allow
+  if (a->bridge && !bridgeDecide(a, d)) return;   // couldn't reach the bridge: the card stays up
   if (d == D_ALLOW || d == D_ALWAYS) { stats.appr++; heartUntil = millis() + 2500; }
   if (d == D_SKIP) noteKeyboard(); else if (fromStick) noteStick();
   if (d == D_DENY)  stats.deny++;
@@ -535,6 +545,8 @@ static void decide(Approval* a, int8_t d, bool fromStick = true) {
     }
     answeredBleId = a->bleId;
     a->used = false;          // desktop's next heartbeat confirms
+  } else if (a->bridge) {
+    a->used = false;          // the bridge has it; the next poll confirms
   } else {
     a->decision = d;          // hook picks it up on next poll
     a->lastPoll = millis();
@@ -603,7 +615,7 @@ static void noteLedger(const String& sid, const String& day, uint32_t tok) {
 }
 
 static uint32_t tokensToday() {
-  uint32_t t = 0;
+  uint32_t t = bridgeUp ? bridgeTokens : 0;
   for (auto& l : ledger) if (l.sid.length() && l.day == curDay) t += l.tok;
   return t;
 }
@@ -645,7 +657,7 @@ static void hEvent() {
   String ev = in["event"] | "";
   if (in["typed"] | false) noteKeyboard();   // a prompt typed in the terminal: you're at the desk
 
-  if (ev == "end") { s->used = false; }
+  if (ev == "end") { s->used = false; if (pinned == s->id) pinned = ""; }
   else {
     String prev = s->state;
     s->state = ev;
@@ -789,47 +801,11 @@ static void hStopPoll() {
 // ------------------------------------------------------------- phone UI ---
 // GET /?t=<token> serves a single page; it calls /state and /act with X-Token.
 
-static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>ClaudeStick</title>
-<style>body{font:15px system-ui;margin:0;background:#111;color:#eee}main{padding:12px;max-width:640px;margin:auto}
-.c{background:#1d1d1d;border-radius:10px;padding:10px;margin:8px 0}.t{color:#f90;font-weight:600}
-.d{color:#999;font-size:13px;word-break:break-word}button{font:inherit;border:0;border-radius:8px;padding:9px 12px;margin:3px 3px 0 0;background:#333;color:#eee}
-.ok{background:#1a5}.no{background:#b33}.ac{background:#f90;color:#000}textarea,select{width:100%;box-sizing:border-box;font:inherit;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:8px;margin-top:6px}
-.row{display:flex;justify-content:space-between;align-items:center}.risk{border:1px solid #b33}.rk{color:#f55;font-weight:600}
-pre{white-space:pre-wrap;word-break:break-word;margin:6px 0;font-size:13px;color:#bbb}.add{color:#5c5}.del{color:#e66}
-.bar{height:6px;background:#333;border-radius:3px;margin:6px 0}.bar i{display:block;height:6px;background:#1a5;border-radius:3px}
-.td{font-size:13px;margin:2px 0}.td.c{color:#666;text-decoration:line-through;background:none;padding:0}.td.i{color:#f90}summary{color:#999;font-size:13px}</style></head><body><main>
-<div class=row><h3>ClaudeStick <span id=tk class=d></span></h3><span><button id=rm onclick="act({action:'remote'})"></button> <a href="#" id=st style="color:#888">settings</a></span></div>
-<div id=ub></div><div id=ap></div><div id=ch></div><div id=ss></div>
-<div class=c><div class=t>Send to Claude</div><select id=sel></select>
-<textarea id=tx rows=3 placeholder="Type an instruction..."></textarea>
-<button class=ac onclick="say()">Send</button><button class=no onclick="act({action:'stop',session:sel.value})">Stop</button>
-<div id=mc></div><div class=d>Delivered when Claude finishes its turn, or after its current step.</div></div>
-</main><script>
-const T=new URLSearchParams(location.search).get('t')||localStorage.cst||'';if(T)localStorage.cst=T;let S={};
-const e=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
-async function act(b){await api('/act',b);load()}
-function dn(id){const t=prompt('Tell Claude why not (it gets this message):');if(t!==null)act({action:'deny',id,text:t})}
-const K=n=>n<1e4?String(n):n<1e6?(n/1e3).toFixed(n<1e5?1:0)+'k':(n/1e6).toFixed(2)+'M';
-const todo=t=>!t?'':`<div class=bar><i style="width:${100*t.done/Math.max(1,t.total)}%"></i></div><details${t.now?' open':''}><summary>${t.done}/${t.total} ${e(t.now||'')}</summary>${t.items.map(i=>`<div class="td ${i[0]}">${i[0]=='c'?'&#10003;':i[0]=='i'?'&#9656;':'&middot;'} ${e(i[1])}</div>`).join('')}</details>`;
-const use=(u,s)=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cr+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache ${K(u.cr+u.cw)}) &middot; context ${s.ctx_pct!=null?Math.round(s.ctx_pct)+'%':K(u.ctx)}${s.model_name?' &middot; '+e(s.model_name):u.model?' &middot; '+e(u.model):''}</div>`;
-function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
-async function load(){try{S=await api('/state')}catch(x){return}
-ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';const L=S.limits||{};tk.textContent=[L.five?'5h '+Math.round(L.five.pct)+'%':'',L.seven?'7d '+Math.round(L.seven.pct)+'%':'',S.tokens_today?K(S.tokens_today)+' tok today':''].filter(Boolean).join(' \u00b7 ');rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
-const diff=t=>e(t).split('\n').map(l=>l.startsWith('+ ')?`<span class=add>${l}</span>`:l.startsWith('- ')?`<span class=del>${l}</span>`:l).join('\n');
-ap.innerHTML=(S.approvals||[]).map(a=>`<div class="c ${a.risk=='high'?'risk':''}"><div class=t>${a.risk=='high'?'<span class=rk>DANGER</span> ':''}Approve? ${e(a.tool)} <span class=d>${e(a.project)}</span></div>${a.risk_why?`<div class=rk>${e(a.risk_why)}</div>`:''}<pre>${diff(a.detail)}</pre>
-<button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button class=no onclick="dn(${a.id})">Deny + note</button><button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
-ch.innerHTML=(S.choices||[]).map(c=>`<div class=c><div class=t>${c.kind=='question'?'Question':'Done'} <span class=d>${e(c.project)}</span></div><div class=d>${e(c.title||c.last)}</div>
-${c.options.map((o,i)=>`<button class=ac onclick="act({action:'choose',id:${c.id},index:${i}})">${e(o)}</button>`).join('')}<button onclick="act({action:'dismiss',id:${c.id}})">Dismiss</button></div>`).join('');
-const v=sel.value;sel.innerHTML=(S.sessions||[]).map(s=>`<option value="${e(s.id)}">${e(s.project)} (${e(s.state)})</option>`).join('');if(v)sel.value=v;
-ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div>${todo(s.todo)}${use(s.usage,s)}</div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
-mc.innerHTML=(S.macros||[]).map((m,i)=>`<button onclick="act({action:'macro',session:sel.value,index:${i}})">${e(m)}</button>`).join('')}
-load();setInterval(load,2000)</script></body></html>)HTML";
+// The phone page lives in firmware/phone_page.html (embedded at build time).
 
 static void hRoot() {
   if (!setupDone) { server.sendHeader("Location", "/setup"); server.send(302, "text/plain", ""); return; }
-  server.send_P(200, "text/html", INDEX_HTML);
+  server.send_P(200, "text/html", EMBED_PHONE_HTML);
 }
 
 static void hState() {
@@ -888,6 +864,7 @@ static void hState() {
 static void setRemoteSetting(uint8_t r) {
   conf.remote = r % 3;
   saveConfig();
+  if (bridgeUp) bridgeSetRemote(conf.remote);   // the bridge decides what "auto" means; its answer comes with the next poll
   updateRemote();
   beep(remoteMode ? 2 : 0);
   touch();
@@ -897,9 +874,23 @@ static void setRemoteSetting(uint8_t r) {
 // it's delivered after Claude's current step or when the turn ends.
 static bool deliverText(Session* s, const String& text) {
   if (!s || !text.length()) return false;
+  if (s->bridge) return bridgeSessionAct(s, "say", -1, text);
   for (auto& x : stops)
     if (x.used && x.result == -1 && x.session == s->id) { x.custom = text; x.result = -3; return true; }
   s->inject = text;
+  return true;
+}
+
+// Answer a Done/Question card: here (the hook polls for it) or on the bridge it came from.
+static bool stopResult(StopReq* r, int result) {
+  if (r->bridge) { if (!bridgeStopResult(r, result)) return false; r->used = false; return true; }
+  r->result = result;
+  return true;
+}
+
+static bool sessionStop(Session* s) {
+  if (s->bridge) return bridgeSessionAct(s, "stop");
+  s->stopFlag = true;
   return true;
 }
 
@@ -930,15 +921,15 @@ static void hAct() {
     StopReq* r = nullptr;
     for (auto& x : stops) if (x.used && x.id == id && x.result == -1) r = &x;
     if (!r) ok = false;
-    else if (action == "dismiss") r->result = -2;
-    else if (index >= 0 && index < r->nMacros) r->result = index;
+    else if (action == "dismiss") ok = stopResult(r, -2);
+    else if (index >= 0 && index < r->nMacros) ok = stopResult(r, index);
     else ok = false;
   } else if (action == "say" || action == "macro" || action == "stop") {
     Session* s = sid.length() ? findSession(sid, false) : targetSession();
     String text = action == "say" ? String((const char*)(in["text"] | "")) :
                   (action == "macro" && index >= 0 && index < nMacros) ? macros[index].text : String();
     if (!s) ok = false;
-    else if (action == "stop") s->stopFlag = true;
+    else if (action == "stop") ok = sessionStop(s);
     else ok = deliverText(s, text);
   } else if (action == "pin") {
     pinned = sid.length() && findSession(sid, false) ? sid : String();
@@ -961,6 +952,7 @@ static void hHealth() {
   out["heap_min"] = ESP.getMinFreeHeap(); out["heap_block"] = (uint32_t)internalBlock();
   out["uptime_s"] = millis() / 1000;
   out["auth"] = token.length() > 0;
+  out["bridge"] = bridgeConfigured() ? (bridgeUp ? "up" : "down") : "off";
   sendJson(out);
 }
 
@@ -1036,19 +1028,98 @@ static void startHttp() {
 static void expireStale() {
   uint32_t now = millis();
   for (auto& a : approvals)
-    if (a.used && a.src == SRC_WIFI && now - a.lastPoll > POLL_STALE_MS) { a.used = false; dirty = true; }
-  for (auto& r : stops)
-    if (r.used && now - r.lastPoll > POLL_STALE_MS) { r.used = false; dirty = true; }
+    if (a.used && a.src == SRC_WIFI && !a.bridge && now - a.lastPoll > POLL_STALE_MS) { a.used = false; dirty = true; }
+  for (auto& r : stops)   // (cards from a bridge come and go with its state, see bridgeApply)
+    if (r.used && !r.bridge && now - r.lastPoll > POLL_STALE_MS) { r.used = false; dirty = true; }
   for (int i = 0; i < MAX_SESSIONS; i++)
-    if (sessions[i].used && now - sessions[i].lastSeen > 30UL * 60 * 1000) { sessions[i].used = false; dirty = true; }
+    if (sessions[i].used && !sessions[i].bridge && now - sessions[i].lastSeen > 30UL * 60 * 1000) { sessions[i].used = false; dirty = true; }
+  // A tie to a session that's gone (ended, expired, replaced) would make every other session's prompts skip.
+  if (pinned.length() && !findSession(pinned, false)) { pinned = ""; dirty = true; }
 }
 
 // ----------------------------------------------------------- Wi-Fi/mDNS ---
 
+// Known networks: home, a phone hotspot, ... The Stick joins the strongest one it can see.
+// The first is the primary (also kept under "ssid"/"pass", where older firmware and the serial commands look).
+static const int MAX_NETS = 4;
+struct WifiNet { String ssid, pass; };
+static WifiNet nets[MAX_NETS];
+static int     nNets = 0, lastNet = 0;
+
+static void saveNets() {
+  JsonDocument d; JsonArray a = d.to<JsonArray>();
+  for (int i = 0; i < nNets; i++) { JsonObject o = a.add<JsonObject>(); o["s"] = nets[i].ssid; o["p"] = nets[i].pass; }
+  String out; serializeJson(d, out);
+  prefs.putString("nets", out);
+  if (nNets) { prefs.putString("ssid", nets[0].ssid); prefs.putString("pass", nets[0].pass); }
+  else { prefs.remove("ssid"); prefs.remove("pass"); }
+}
+
+static void loadNets() {
+  nNets = 0;
+  JsonDocument d;
+  if (!deserializeJson(d, prefs.getString("nets", "")) && d.is<JsonArray>())
+    for (JsonObject o : d.as<JsonArray>()) {
+      String s = o["s"] | "";
+      if (nNets < MAX_NETS && s.length()) { nets[nNets].ssid = s; nets[nNets].pass = (const char*)(o["p"] | ""); nNets++; }
+    }
+  if (!nNets && ssid.length()) { nets[0].ssid = ssid; nets[0].pass = pass; nNets = 1; }   // a single network saved by older firmware
+  if (nNets) { ssid = nets[0].ssid; pass = nets[0].pass; }
+}
+
+// Remember a network (or update its password). `primary` also makes it the first choice.
+static bool addNet(const String& s, const String& p, bool primary) {
+  int at = -1;
+  for (int i = 0; i < nNets; i++) if (nets[i].ssid == s) at = i;
+  if (at < 0) {
+    if (nNets >= MAX_NETS) { if (!primary) return false; at = nNets - 1; }   // full: a network you just set up replaces the last
+    else at = nNets++;
+  }
+  nets[at].ssid = s; nets[at].pass = p;
+  if (primary) { WifiNet n = nets[at]; for (int i = at; i > 0; i--) nets[i] = nets[i - 1]; nets[0] = n; }
+  saveNets();
+  return true;
+}
+
+static void forgetNet(const String& s) {
+  for (int i = 0; i < nNets; i++)
+    if (nets[i].ssid == s) { for (int j = i; j < nNets - 1; j++) nets[j] = nets[j + 1]; nNets--; break; }
+  if (ssid == s) {   // forgetting the one we're aiming at: don't keep retrying it after a drop
+    ssid = nNets ? nets[0].ssid : String(); pass = nNets ? nets[0].pass : String();
+  }
+  saveNets();
+}
+
+static void forgetAllNets() {
+  nNets = 0; ssid = ""; pass = "";
+  prefs.remove("nets"); prefs.remove("ssid"); prefs.remove("pass");
+}
+
+// The strongest known network among `n` scan results, or -1.
+static int bestKnownNet(int n) {
+  int best = -1, bestRssi = -1000;
+  for (int i = 0; i < n; i++) {
+    String s = WiFi.SSID(i);
+    for (int j = 0; j < nNets; j++)
+      if (s == nets[j].ssid && WiFi.RSSI(i) > bestRssi) { best = j; bestRssi = WiFi.RSSI(i); }
+  }
+  return best;
+}
+
+// At power-on with several networks known: look around once and start with the strongest.
+static void pickNetAtBoot() {
+  if (nNets < 2) return;
+  int best = bestKnownNet(WiFi.scanNetworks());
+  WiFi.scanDelete();
+  if (best >= 0) { lastNet = best; ssid = nets[best].ssid; pass = nets[best].pass; }
+}
+
 static void wifiTick() {
-  static uint32_t lastTry = 0;
-  if (!ssid.length()) return;
+  static uint32_t lastTry = 0, scanAt = 0;
+  static bool scanning = false;
+  if (!nNets) return;
   if (WiFi.status() == WL_CONNECTED) {
+    scanning = false;
     if (!mdnsUp && MDNS.begin(mdnsHost.c_str())) {
       MDNS.addService("http", "tcp", HTTP_PORT);
       MDNS.addService("claudestick", "tcp", HTTP_PORT);   // hooks find the Stick again if its IP changes
@@ -1058,10 +1129,23 @@ static void wifiTick() {
     return;
   }
   if (mdnsUp) { MDNS.end(); mdnsUp = false; dirty = true; }
-  if (millis() - lastTry > 15000) {
-    lastTry = millis();
+  if (scanning) {   // choose among the known networks that are in range
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING && millis() - scanAt < 12000) return;
+    scanning = false;
+    int best = bestKnownNet(n);
+    WiFi.scanDelete();
+    if (best < 0) best = (lastNet + 1) % nNets;   // none in sight (or a hidden one): take turns
+    lastNet = best; ssid = nets[best].ssid; pass = nets[best].pass;
     WiFi.disconnect();
     WiFi.begin(ssid.c_str(), pass.c_str());
+    lastTry = millis(); dirty = true;
+    return;
+  }
+  if (millis() - lastTry > 15000) {
+    lastTry = millis();
+    if (nNets == 1) { WiFi.disconnect(); WiFi.begin(ssid.c_str(), pass.c_str()); }
+    else { WiFi.scanNetworks(true); scanning = true; scanAt = millis(); }   // async: the screen keeps running
   }
 }
 
@@ -1115,7 +1199,7 @@ static void improvResult(uint8_t cmd, const String* strs, int n) {
 
 static bool connectWifi(const String& s, const String& p, uint32_t timeoutMs) {
   ssid = s; pass = p;
-  prefs.putString("ssid", ssid); prefs.putString("pass", pass);
+  addNet(s, p, true);
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());
   uint32_t t0 = millis();
@@ -1212,7 +1296,7 @@ static void textCommand(String line) {
   } else if (line == "reboot") {
     ESP.restart();
   } else if (line == "forget") {
-    prefs.remove("ssid"); prefs.remove("pass"); prefs.putBool("setup", false); if (!safeMode) bleClearBonds();
+    forgetAllNets(); prefs.putBool("setup", false); if (!safeMode) bleClearBonds();
     Serial.println("ok forgotten, rebooting"); delay(200); ESP.restart();
   } else {
     Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | tz <rule> | clock 12|24 | font 0|1 | info | setup | reboot | forget");
@@ -1321,6 +1405,10 @@ static void hSetupInfo() {
   out["done"] = setupDone; out["ap"] = apOn; out["fw"] = FW_VERSION; out["port"] = HTTP_PORT;
   JsonObject w = out["wifi"].to<JsonObject>();
   w["ssid"] = ssid; w["connected"] = WiFi.status() == WL_CONNECTED; w["ip"] = WiFi.localIP().toString();
+  JsonArray known = w["saved"].to<JsonArray>();
+  for (int i = 0; i < nNets; i++) known.add(nets[i].ssid);
+  JsonObject br = out["link"].to<JsonObject>();   // the bridge the Stick follows; its token is never sent back
+  br["url"] = bridgeUrl; br["set"] = bridgeConfigured(); br["up"] = bridgeUp; br["error"] = bridgeUp ? "" : bridgeErr;
   out["name"] = devName; out["bt"] = devName; out["buddy"] = buddySpeciesIdx();
   out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
   out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24; out["clock"] = clockStr(); out["font"] = textStyle;
@@ -1351,11 +1439,58 @@ static void hSetupWifi() {
   if (!setupAuthed()) return;
   JsonDocument in; if (!readBody(in)) return;
   ssid = (const char*)(in["ssid"] | ""); pass = (const char*)(in["pass"] | "");
-  prefs.putString("ssid", ssid); prefs.putString("pass", pass);
+  if (ssid.length()) addNet(ssid, pass, true);
   server.send(200, "application/json", "{\"ok\":true}");
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());   // non-blocking; the page polls /setup/info
   dirty = true;
+}
+
+// POST /setup/wifi/add {ssid, pass}: remember another network (a phone hotspot, the office...) without leaving this one.
+static void hSetupWifiAdd() {
+  if (!setupAuthed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  String s = in["ssid"] | "", p = in["pass"] | "";
+  if (!s.length() || s.length() > 32 || p.length() > 63) { server.send(400, "application/json", "{\"error\":\"need a network name (32 characters at most) and a password (63 at most)\"}"); return; }
+  if (!addNet(s, p, false)) { server.send(409, "application/json", "{\"error\":\"four networks is the limit: forget one first\"}"); return; }
+  server.send(200, "application/json", "{\"ok\":true}");
+  dirty = true;
+}
+
+// POST /setup/wifi/forget {ssid}
+static void hSetupWifiForget() {
+  if (!setupAuthed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  forgetNet(in["ssid"] | "");
+  server.send(200, "application/json", "{\"ok\":true}");
+  dirty = true;
+}
+
+// POST /setup/bridge {url, token}: where your bridge is. It is tried before answering, so the page can say what's wrong.
+// An empty url clears it; a blank token keeps the saved one.
+static void hSetupBridge() {
+  if (!setupAuthed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  String url = in["url"] | "", tok = in["token"] | "";
+  JsonDocument out;
+  url.trim(); tok.trim();
+  if (!url.length()) { bridgeSave("", ""); bridgeDrop(); out["ok"] = true; out["set"] = false; sendJson(out); return; }
+  url = bridgeCleanUrl(url);
+  if (!url.length()) { server.send(400, "application/json", "{\"error\":\"the address should look like https://stick.example.com\"}"); return; }
+  if (!tok.length() && url == bridgeUrl) tok = bridgeTok;
+  if (!tok.length() || tok.length() > 64) { server.send(400, "application/json", "{\"error\":\"paste the bridge's token\"}"); return; }
+  bridgeDrop();
+  bridgeSave(url, tok);
+  String body;
+  int code = WiFi.status() == WL_CONNECTED ? bridgeRequest("GET", "/state?n=1&v=0", "", body) : -3;
+  JsonDocument d;
+  bool good = code == 200 && !deserializeJson(d, body) && d["v"].is<uint32_t>();
+  if (good) { bridgeUp = true; bridgeFails = 0; bridgeApply(d); bridgeV = d["v"] | 0UL; bridgeNextPoll = millis() + BRIDGE_POLL_ACTIVE_MS; }
+  out["ok"] = good; out["set"] = true;
+  out["error"] = good ? "" : code == 401 ? "the bridge rejected that token" : code == 404 ? "that address answered, but it isn't a ClaudeStick bridge" :
+                 code > 0 ? "the bridge answered " + String(code) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
+                 bridgeErr.length() ? bridgeErr : "could not reach it";
+  sendJson(out);
 }
 
 static void hSetupPreview() {
@@ -1426,6 +1561,9 @@ static void registerSetupRoutes() {
   server.on("/setup/info", HTTP_GET, hSetupInfo);
   server.on("/setup/scan", HTTP_GET, hSetupScan);
   server.on("/setup/wifi", HTTP_POST, hSetupWifi);
+  server.on("/setup/wifi/add", HTTP_POST, hSetupWifiAdd);
+  server.on("/setup/wifi/forget", HTTP_POST, hSetupWifiForget);
+  server.on("/setup/bridge", HTTP_POST, hSetupBridge);
   server.on("/setup/preview", HTTP_POST, hSetupPreview);
   server.on("/setup/save", HTTP_POST, hSetupSave);
   server.on("/setup/time", HTTP_POST, hSetupTime);
@@ -1589,6 +1727,7 @@ static int statusBar(bool paint) {
   put(4);
   if (!safeMode) { int px = put(5); if (paint) iconBluetooth(px, 0, bleConnected()); put(4); }
   { int px = put(11); if (paint) iconWifi(px, 0, wifiBars(), wifiRssiAvg()); }
+  if (bridgeConfigured()) { put(4); int px = put(7); if (paint) iconBridge(px, 2, bridgeUp ? C_OK : bridgeFails ? C_BAD : C_DIM); }
   return W - 5 - x;
 }
 
@@ -1888,7 +2027,8 @@ static int menuEntries(MenuEntry* e, String* labels) {
   int n = 0;
   auto add = [&](MenuItem k, int arg, const String& l) { e[n] = { k, arg }; labels[n] = l; n++; };
   add(MI_STOP, 0, "stop now");
-  for (int i = 0; i < nMacros; i++) add(MI_MACRO, i, "> " + macros[i].label);
+  { Session* ts = targetSession(); bool br = ts && ts->bridge;   // a bridge session uses the bridge's macros
+    for (int i = 0, m = br ? nBridgeMacro : nMacros; i < m; i++) add(MI_MACRO, i, "> " + (br ? bridgeMacro[i] : macros[i].label)); }
   add(MI_REMOTE, 0, String("remote: ") + remoteName(conf.remote) + (conf.remote == 2 ? (remoteMode ? " (on)" : " (off)") : ""));
   add(MI_TIE, 0, pinned.length() ? "tie to session (tied)" : "tie to session");
   add(MI_BUDDY, 0, String("buddy: ") + buddySpeciesName());
@@ -2069,6 +2209,7 @@ static void drawInfo() {
   kv("wifi", ssid.length() ? ssid : String("(none)"), up ? C_OK : C_BAD);
   kv("sig", up ? String((int)wifiRssiAvg()) + " dBm  " + String(wifiBars()) + "/4" : String("not connected"), up ? C_FG : C_BAD);
   kv("ip", WiFi.localIP().toString() + ":" + String(HTTP_PORT));
+  if (bridgeConfigured()) kv("link", bridgeUp ? String("connected") : "offline: " + (bridgeErr.length() ? bridgeErr : String("connecting")), bridgeUp ? C_OK : C_BAD);
   kv("host", mdnsHost);
   kv("key", token, C_CLAUDE);
   String tk = fmtTok(tokensToday()) + " today";
@@ -2407,8 +2548,8 @@ static void buttons() {
     int total = r->nMacros + 1;
     listNav(total, bClick, pClick);
     if (aHold) { voiceCapture(r); return; }
-    if (bHold || (aClick && menuIdx == total - 1)) { r->result = -2; menuIdx = 0; beep(0); }
-    else if (aClick) { r->result = menuIdx; menuIdx = 0; beep(2); }
+    if (bHold || (aClick && menuIdx == total - 1)) { if (stopResult(r, -2)) { menuIdx = 0; beep(0); } }
+    else if (aClick) { if (stopResult(r, menuIdx)) { menuIdx = 0; beep(2); } }
     return;
   }
 
@@ -2439,8 +2580,9 @@ static void buttons() {
     }
     if (!aClick) return;
     switch (e.kind) {
-      case MI_STOP:   if (s) { s->stopFlag = true; beep(3); } screen = SCR_HOME; menuIdx = 0; break;
-      case MI_MACRO:  if (s) { deliverText(s, macros[e.arg].text); beep(2); } screen = SCR_HOME; menuIdx = 0; break;
+      case MI_STOP:   if (s && sessionStop(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
+      case MI_MACRO:  if (s && (s->bridge ? bridgeSessionAct(s, "macro", e.arg) : deliverText(s, macros[e.arg].text))) beep(2);
+                      screen = SCR_HOME; menuIdx = 0; break;
       case MI_REMOTE: setRemoteSetting(conf.remote + 1); break;                       // stay in menu
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
       case MI_BUDDY:  screen = SCR_PET; break;
@@ -2467,6 +2609,7 @@ static void buttons() {
     if (bHold) { screen = SCR_HOME; menuIdx = 0; }
     else if (aClick) {
       pinned = ids[menuIdx];
+      if (bridgeUp) { Session* ps = pinned.length() ? findSession(pinned, false) : nullptr; if (!pinned.length() || (ps && ps->bridge)) bridgePin(pinned); }
       if (pinned.length())
         for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].used && sessions[i].id == pinned) focusSession = i;
       beep(2); screen = SCR_HOME; menuIdx = 0;
@@ -2547,6 +2690,8 @@ void setup() {
   ssid  = prefs.getString("ssid", CS_WIFI_SSID);
   pass  = prefs.getString("pass", CS_WIFI_PASS);
   token = prefs.getString("token", CS_TOKEN);
+  bridgeUrl = prefs.getString("brurl", ""); bridgeTok = prefs.getString("brtok", "");
+  loadNets();
   tiltMode = prefs.getChar("tilt", 1);
   loadConfig();
   skipVersion = prefs.getString("skipver", "");
@@ -2555,7 +2700,7 @@ void setup() {
   M5.Speaker.setVolume(volume);
   M5.update();
   if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {   // hold A+B while powering on: forget Wi-Fi, redo setup
-    prefs.remove("ssid"); prefs.remove("pass"); prefs.putBool("setup", false); setupDone = false;
+    forgetAllNets(); prefs.putBool("setup", false); setupDone = false;
   }
   buddySetSpeciesIdx(prefs.getUChar("buddy", 0));
   if (!token.length()) {   // first boot: generate a random token
@@ -2578,7 +2723,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(mdnsHost.c_str());
   WiFi.setSleep(true);     // required for Wi-Fi + BLE coexistence
-  if (ssid.length()) WiFi.begin(ssid.c_str(), pass.c_str());
+  if (nNets) { pickNetAtBoot(); WiFi.begin(ssid.c_str(), pass.c_str()); }
   else if (!setupDone) startAP();
 
   if (!safeMode) bleInit(devName.c_str());
@@ -2604,6 +2749,7 @@ void loop() {
   M5.update();
   serialTick();
   wifiTick();
+  bridgeTick();
   server.handleClient();
   pollBle();
   expireStale();

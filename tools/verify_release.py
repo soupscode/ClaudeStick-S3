@@ -8,6 +8,7 @@ Checks that ota.json, manifest.json and the firmware images agree with each othe
   * the merged image looks like a flash dump (bootloader at 0x0, partition table at 0x8000, app at 0x10000)
     and carries the same app image
   * the version string, and the baked-in update URL (CS_UPDATE_URL env), are inside the app image
+  * the bridge's VERSION (bridge/claudestick_bridge.py), when present, equals FW_VERSION
   * the update notes for this version aren't empty (warning only)
 
 Usage: tools/verify_release.py [--root DIR]      Exit status 1 on any error. Prints GitHub annotations.
@@ -39,6 +40,13 @@ m = re.search(r'FW_VERSION\s*=\s*"([^"]+)"', src or '')
 version = m.group(1) if m else None
 if not version:
     err('FW_VERSION not found in firmware/src/main.cpp')
+
+# the bridge ships in the same release: its version must match the firmware's
+bridge_src = path('bridge', 'claudestick_bridge.py')
+if os.path.exists(bridge_src):
+    bm = re.search(r'^VERSION\s*=\s*"([^"]+)"', read(bridge_src, 'r') or '', re.M)
+    if not bm or bm.group(1) != version:
+        err(f'bridge VERSION {bm.group(1) if bm else None!r} != FW_VERSION {version!r}')
 
 ota = None
 raw = read(path('web', 'ota.json'), 'r')

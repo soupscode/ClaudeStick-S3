@@ -47,6 +47,11 @@ cases = {
 for name, fn in cases.items():
     d = base + "/c_" + name.replace(" ", "_"); shutil.copytree(base + "/good", d); fn(d)
     check("fails: " + name, run(d).returncode == 1)
+d = base + "/c_bridge"; shutil.copytree(base + "/good", d); os.makedirs(d + "/bridge")
+open(d + "/bridge/claudestick_bridge.py", "w").write('VERSION = "0.8.0"\n')
+check("a bridge with the matching version passes", run(d).returncode == 0, run(d).stdout)
+open(d + "/bridge/claudestick_bridge.py", "w").write('VERSION = "0.7.0"\n')
+check("fails: bridge version differs from the firmware's", run(d).returncode == 1)
 check("fails: update URL not baked in", run(base + "/good", "https://other.github.io/x/").returncode == 1)
 d = base + "/c_slot"; shutil.copytree(base + "/good", d)
 p = d + "/web/firmware/claudestick.bin"; b = bytearray(open(p, "rb").read()); b[0x8000 + 32 * 2 + 3] = 0x20; open(p, "wb").write(b)

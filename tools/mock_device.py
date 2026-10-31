@@ -27,9 +27,9 @@ TOKEN = ""
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.join(_HERE, "..")
 try:
-    INDEX_HTML = re.search(r'R"HTML\((.*?)\)HTML"', open(os.path.join(_REPO, "firmware/src/main.cpp")).read(), re.S).group(1)
-except (OSError, AttributeError):
-    INDEX_HTML = "<p>firmware source not found</p>"
+    INDEX_HTML = open(os.path.join(_REPO, "firmware/phone_page.html")).read()
+except OSError:
+    INDEX_HTML = "<p>phone page not found</p>"
 try:
     SETUP_HTML = open(os.path.join(_REPO, "firmware/setup_page.html")).read()
 except OSError:
@@ -50,7 +50,7 @@ CONF = {"permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s":
         "stt_model": "whisper-1", "stt_key": "", "stt_language": "", "update_url": "", "macros": list(DEFAULT_MACROS)}
 S = {"sessions": {}, "approvals": {}, "stops": {}, "next": 1, "log": [], "pinned": "",
      "last_stick": 0.0, "last_kbd": 0.0, "ota_bytes": 0}
-SETUP = {"done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
+SETUP = {"nets": [], "bridge": {"url": "", "tok": "", "up": False, "error": ""}, "done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
          "buddy": 0, "volume": 120, "tilt": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
 DEVICE_ID, MDNS_HOST = "a1b2c3d4e5f6", "claudestick-e5f6.local"
 
@@ -198,7 +198,10 @@ class H(BaseHTTPRequestHandler):
                 return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.8.1", "port": self.server.server_port,
                                    "tz": SETUP["tz"], "tz_name": SETUP["tz_name"], "clock24": SETUP["clock24"],
                                    "clock": SETUP.get("clock", ""), "font": SETUP["font"],
-                                   "wifi": {"ssid": SETUP["ssid"], "connected": SETUP["connected"], "ip": SETUP["ip"]},
+                                   "wifi": {"ssid": SETUP["ssid"], "connected": SETUP["connected"], "ip": SETUP["ip"],
+                                            "saved": [n["s"] for n in SETUP["nets"]] or ([SETUP["ssid"]] if SETUP["ssid"] else [])},
+                                   "link": {"url": SETUP["bridge"]["url"], "set": bool(SETUP["bridge"]["url"]),
+                                              "up": SETUP["bridge"]["up"], "error": SETUP["bridge"]["error"]},
                                    "name": SETUP["name"], "bt": SETUP["name"], "buddy": SETUP["buddy"],
                                    "volume": SETUP["volume"], "tilt": SETUP["tilt"], "remote": CONF["remote"],
                                    "buddies": BUDDIES, "token": TOKEN, "ip": SETUP["ip"]})
@@ -271,6 +274,36 @@ class H(BaseHTTPRequestHandler):
             if p == "/setup/wifi":
                 SETUP.update(ssid=b.get("ssid", ""), connected=b.get("pass") == "goodpass")
                 return self.reply({"ok": True})
+            if p == "/setup/wifi/add":
+                ssid_, pw = str(b.get("ssid", "")), str(b.get("pass", ""))
+                if not ssid_ or len(ssid_) > 32 or len(pw) > 63:
+                    return self.reply({"error": "need a network name (32 characters at most) and a password (63 at most)"}, 400)
+                if not SETUP["nets"] and SETUP["ssid"]:
+                    SETUP["nets"].append({"s": SETUP["ssid"], "p": ""})
+                for n in SETUP["nets"]:
+                    if n["s"] == ssid_:
+                        n["p"] = pw
+                        return self.reply({"ok": True})
+                if len(SETUP["nets"]) >= 4:
+                    return self.reply({"error": "four networks is the limit: forget one first"}, 409)
+                SETUP["nets"].append({"s": ssid_, "p": pw})
+                return self.reply({"ok": True})
+            if p == "/setup/wifi/forget":
+                SETUP["nets"] = [n for n in SETUP["nets"] if n["s"] != b.get("ssid")]
+                return self.reply({"ok": True})
+            if p == "/setup/bridge":
+                url = str(b.get("url", "")).strip().rstrip("/")
+                if not url:
+                    SETUP["bridge"] = {"url": "", "tok": "", "up": False, "error": ""}
+                    return self.reply({"ok": True, "set": False})
+                if not re.fullmatch(r"https?://[^/\s@?]+", url):
+                    return self.reply({"error": "the address should look like https://stick.example.com"}, 400)
+                tok = str(b.get("token", "")).strip() or (SETUP["bridge"]["tok"] if SETUP["bridge"]["url"] == url else "")
+                if not tok:
+                    return self.reply({"error": "paste the bridge's token"}, 400)
+                good = tok == "goodtoken"
+                SETUP["bridge"] = {"url": url, "tok": tok, "up": good, "error": "" if good else "the bridge rejected that token"}
+                return self.reply({"ok": good, "set": True, "error": SETUP["bridge"]["error"]})
             if p == "/setup/preview":
                 SETUP["buddy"] = b.get("buddy", 0)
                 if isinstance(b.get("font"), int):
@@ -331,6 +364,8 @@ class H(BaseHTTPRequestHandler):
                 ev = b.get("event", "")
                 if ev == "end":
                     S["sessions"].pop(sid, None)
+                    if S["pinned"] == sid:   # a tie to a session that's gone would skip everyone else's prompts
+                        S["pinned"] = ""
                     return self.reply({"stop": False, "inject": None, "remote": remote_now()})
                 s["state"], s["detail"] = ev, b.get("detail", "")
                 if isinstance(b.get("todo"), dict):
@@ -360,6 +395,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply({"ok": True})
             if p == "/permission":
                 i = nid()
+                s["state"] = "approve"
                 risk = b.get("risk", "")
                 S["approvals"][i] = {"tool": b.get("tool"), "detail": b.get("detail"), "project": s["project"],
                                      "always": "" if risk == "high" else b.get("always", ""), "risk": risk,

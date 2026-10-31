@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>ClaudeStick</title>
+<style>body{font:15px system-ui;margin:0;background:#111;color:#eee}main{padding:12px;max-width:640px;margin:auto}
+.c{background:#1d1d1d;border-radius:10px;padding:10px;margin:8px 0}.t{color:#f90;font-weight:600}
+.d{color:#999;font-size:13px;word-break:break-word}button{font:inherit;border:0;border-radius:8px;padding:9px 12px;margin:3px 3px 0 0;background:#333;color:#eee}
+.ok{background:#1a5}.no{background:#b33}.ac{background:#f90;color:#000}textarea,select{width:100%;box-sizing:border-box;font:inherit;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:8px;margin-top:6px}
+.row{display:flex;justify-content:space-between;align-items:center}.risk{border:1px solid #b33}.rk{color:#f55;font-weight:600}
+pre{white-space:pre-wrap;word-break:break-word;margin:6px 0;font-size:13px;color:#bbb}.add{color:#5c5}.del{color:#e66}
+.bar{height:6px;background:#333;border-radius:3px;margin:6px 0}.bar i{display:block;height:6px;background:#1a5;border-radius:3px}
+.td{font-size:13px;margin:2px 0}.td.c{color:#666;text-decoration:line-through;background:none;padding:0}.td.i{color:#f90}summary{color:#999;font-size:13px}</style></head><body><main>
+<div class=row><h3>ClaudeStick <span id=tk class=d></span></h3><span><button id=rm onclick="act({action:'remote'})"></button> <a href="#" id=st style="color:#888">settings</a></span></div>
+<div id=ub></div><div id=ap></div><div id=ch></div><div id=ss></div>
+<div class=c><div class=t>Send to Claude</div><select id=sel></select>
+<textarea id=tx rows=3 placeholder="Type an instruction..."></textarea>
+<button class=ac onclick="say()">Send</button><button class=no onclick="act({action:'stop',session:sel.value})">Stop</button>
+<div id=mc></div><div class=d>Delivered when Claude finishes its turn, or after its current step.</div></div>
+</main><script>
+const T=new URLSearchParams(location.search).get('t')||localStorage.cst||'';if(T)localStorage.cst=T;let S={};
+const e=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(p,b){const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
+async function act(b){await api('/act',b);load()}
+function dn(id){const t=prompt('Tell Claude why not (it gets this message):');if(t!==null)act({action:'deny',id,text:t})}
+const K=n=>n<1e4?String(n):n<1e6?(n/1e3).toFixed(n<1e5?1:0)+'k':(n/1e6).toFixed(2)+'M';
+const todo=t=>!t?'':`<div class=bar><i style="width:${100*t.done/Math.max(1,t.total)}%"></i></div><details${t.now?' open':''}><summary>${t.done}/${t.total} ${e(t.now||'')}</summary>${t.items.map(i=>`<div class="td ${i[0]}">${i[0]=='c'?'&#10003;':i[0]=='i'?'&#9656;':'&middot;'} ${e(i[1])}</div>`).join('')}</details>`;
+const use=(u,s)=>!u?'':`<div class=d>tokens ${K(u.in+u.out+u.cr+u.cw)} (in ${K(u.in)}, out ${K(u.out)}, cache ${K(u.cr+u.cw)}) &middot; context ${s.ctx_pct!=null?Math.round(s.ctx_pct)+'%':K(u.ctx)}${s.model_name?' &middot; '+e(s.model_name):u.model?' &middot; '+e(u.model):''}</div>`;
+function say(){if(!tx.value.trim())return;act({action:'say',session:sel.value,text:tx.value});tx.value=''}
+async function load(){try{S=await api('/state')}catch(x){return}
+ub.innerHTML=S.update?`<div class=c><span class=t>Update ${e(S.update)} available</span> <a href="/setup?t=${T}" style="color:#888">settings</a> or on the Stick</div>`:'';const L=S.limits||{};tk.textContent=[L.five?'5h '+Math.round(L.five.pct)+'%':'',L.seven?'7d '+Math.round(L.seven.pct)+'%':'',S.tokens_today?K(S.tokens_today)+' tok today':''].filter(Boolean).join(' \u00b7 ');rm.textContent='Remote: '+S.remote_setting+(S.remote_setting=='auto'?(S.remote?' (on)':' (off)'):'');rm.className=S.remote?'ac':'';st.href='/setup?t='+T;
+const diff=t=>e(t).split('\n').map(l=>l.startsWith('+ ')?`<span class=add>${l}</span>`:l.startsWith('- ')?`<span class=del>${l}</span>`:l).join('\n');
+ap.innerHTML=(S.approvals||[]).map(a=>`<div class="c ${a.risk=='high'?'risk':''}"><div class=t>${a.risk=='high'?'<span class=rk>DANGER</span> ':''}Approve? ${e(a.tool)} <span class=d>${e(a.project)}</span></div>${a.risk_why?`<div class=rk>${e(a.risk_why)}</div>`:''}<pre>${diff(a.detail)}</pre>
+<button class=ok onclick="act({action:'approve',id:${a.id}})">Approve</button>${a.always?`<button class=ok onclick="act({action:'always',id:${a.id}})" title="${e(a.always)}">Always</button>`:''}<button class=no onclick="act({action:'deny',id:${a.id}})">Deny</button>${a.src=='wifi'?`<button class=no onclick="dn(${a.id})">Deny + note</button><button onclick="act({action:'keyboard',id:${a.id}})">Keyboard</button>`:''}${a.always?`<div class=d>always = ${e(a.always)}</div>`:''}</div>`).join('');
+ch.innerHTML=(S.choices||[]).map(c=>`<div class=c><div class=t>${c.kind=='question'?'Question':'Done'} <span class=d>${e(c.project)}</span></div><div class=d>${e(c.title||c.last)}</div>
+${c.options.map((o,i)=>`<button class=ac onclick="act({action:'choose',id:${c.id},index:${i}})">${e(o)}</button>`).join('')}<button onclick="act({action:'dismiss',id:${c.id}})">Dismiss</button></div>`).join('');
+const v=sel.value;sel.innerHTML=(S.sessions||[]).map(s=>`<option value="${e(s.id)}">${e(s.project)} (${e(s.state)})</option>`).join('');if(v)sel.value=v;
+ss.innerHTML=(S.sessions||[]).map(s=>`<div class=c><div class=row><div class=t>${S.pinned==s.id?'* ':''}${e(s.project)} <span class=d>${e(s.state)}</span></div><button onclick="act({action:'pin',session:'${S.pinned==s.id?'':e(s.id)}'})">${S.pinned==s.id?'Unpin':'Pin'}</button></div><div class=d>${e(s.detail)}</div>${todo(s.todo)}${use(s.usage,s)}</div>`).join('')+(S.desktop?`<div class=c><div class=t>Desktop</div><div class=d>${e(S.desktop)}</div></div>`:'');
+mc.innerHTML=(S.macros||[]).map((m,i)=>`<button onclick="act({action:'macro',session:sel.value,index:${i}})">${e(m)}</button>`).join('')}
+load();setInterval(load,2000)</script></body></html>

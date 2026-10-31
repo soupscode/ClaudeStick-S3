@@ -25,8 +25,42 @@ static void voiceFail(const String& why) {
 
 static void writeLE(uint8_t* p, uint32_t v, int n) { for (int i = 0; i < n; i++) p[i] = (v >> (8 * i)) & 0xFF; }
 
+// 44-byte WAV header for 16-bit mono PCM.
+static void wavHeader(uint8_t* p, size_t pcmBytes) {
+  memcpy(p, "RIFF", 4); writeLE(p + 4, 36 + pcmBytes, 4); memcpy(p + 8, "WAVEfmt ", 8);
+  writeLE(p + 16, 16, 4); writeLE(p + 20, 1, 2); writeLE(p + 22, 1, 2); writeLE(p + 24, VOICE_RATE, 4);
+  writeLE(p + 28, VOICE_RATE * 2, 4); writeLE(p + 32, 2, 2); writeLE(p + 34, 16, 2);
+  memcpy(p + 36, "data", 4); writeLE(p + 40, pcmBytes, 4);
+}
+
+// Speech to text through the bridge: a WAV in, {"text": ...} out. The bridge holds the speech server's address and key.
+static bool bridgeStt(const uint8_t* wav, size_t len, String& outText) {
+  String out;
+  int code = bridgeRequest("POST", "/stt", "", out, 30000, "audio/wav", wav, len);
+  if (code != 200) {
+    JsonDocument e; String why = (code > 0 && !deserializeJson(e, out)) ? String((const char*)(e["error"] | "")) : String();
+    voiceErr = "bridge: " + (why.length() ? why : code > 0 ? "error " + String(code) : bridgeErr);
+    return false;
+  }
+  JsonDocument d;
+  if (deserializeJson(d, out)) { voiceErr = "bridge: bad reply"; return false; }
+  outText = (const char*)(d["text"] | "");
+  outText.trim();
+  return true;
+}
+
 // Multipart body: file (WAV) + model + optional language, all in PSRAM.
 static bool sttRequest(String& outText) {
+  if (bridgeUp) {   // away from home: the bridge knows the speech server, so send it just the WAV
+    size_t pcm = voiceLen * 2;
+    uint8_t* wav = (uint8_t*)ps_malloc(44 + pcm);
+    if (!wav) return false;
+    wavHeader(wav, pcm);
+    memcpy(wav + 44, voiceBuf, pcm);
+    bool ok = bridgeStt(wav, 44 + pcm, outText);
+    free(wav);
+    return ok;
+  }
   const String boundary = "----claudestick7f3a";
   size_t pcmBytes = voiceLen * 2;
   String head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\n"
@@ -41,11 +75,7 @@ static bool sttRequest(String& outText) {
   if (!body) return false;
   uint8_t* p = body;
   memcpy(p, head.c_str(), head.length()); p += head.length();
-  // 44-byte WAV header, 16-bit mono PCM
-  memcpy(p, "RIFF", 4); writeLE(p + 4, 36 + pcmBytes, 4); memcpy(p + 8, "WAVEfmt ", 8);
-  writeLE(p + 16, 16, 4); writeLE(p + 20, 1, 2); writeLE(p + 22, 1, 2); writeLE(p + 24, VOICE_RATE, 4);
-  writeLE(p + 28, VOICE_RATE * 2, 4); writeLE(p + 32, 2, 2); writeLE(p + 34, 16, 2);
-  memcpy(p + 36, "data", 4); writeLE(p + 40, pcmBytes, 4); p += 44;
+  wavHeader(p, pcmBytes); p += 44;
   memcpy(p, voiceBuf, pcmBytes); p += pcmBytes;
   memcpy(p, tail.c_str(), tail.length());
 
@@ -74,7 +104,7 @@ static void drawVoiceRec(uint32_t ms);   // defined with the other screens
 static void voiceRecord();
 
 static bool voiceReady() {
-  if (!conf.sttUrl.length()) { voiceFail("voice isn't set up: open settings"); return false; }
+  if (!conf.sttUrl.length() && !bridgeUp) { voiceFail("voice isn't set up: open settings"); return false; }
   if (WiFi.status() != WL_CONNECTED) { voiceFail("no wi-fi"); return false; }
   if (!voiceBuf) voiceBuf = (int16_t*)ps_malloc(VOICE_MAX * sizeof(int16_t));
   if (!voiceBuf) { voiceFail("out of memory"); return false; }

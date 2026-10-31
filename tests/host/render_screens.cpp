@@ -106,6 +106,14 @@ int main(){
   }
   screen = SCR_PET; buddySetSpeciesIdx(0); shot("40_pet_picker", 2); screen = SCR_HOME;
   { sessions[0].state = "done"; sessions[0].stateSince = NOW; shot("41_home_done", 2); sessions[0].state = "tool"; }
+  // remote access through a bridge: the link row on the info screen and the status-bar cloud
+  bridgeUrl = "https://stick.example.com"; bridgeTok = "x"; bridgeUp = true; bridgeFails = 0;
+  screen = SCR_INFO; shot("42_info_bridge", 2);
+  screen = SCR_HOME; shot("43_home_bridge_up", 2);
+  bridgeUp = false; bridgeFails = 3; bridgeErr = "token rejected";
+  screen = SCR_INFO; shot("44_info_bridge_offline", 2);
+  screen = SCR_HOME; shot("45_home_bridge_offline", 2);
+  bridgeUrl = ""; bridgeTok = ""; bridgeFails = 0; bridgeErr = "";
   // buddy gallery
   for (int i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); char n[64]; snprintf(n, sizeof n, "sp_%02d_%s", i, buddySpeciesName()); screen = SCR_HOME; sessions[0].state="tool"; shot(n, 7); }
   return 0;

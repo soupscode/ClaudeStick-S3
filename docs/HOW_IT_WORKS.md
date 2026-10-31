@@ -10,7 +10,8 @@ Claude Code (CLI) --hooks--> claudestick_hook.py --HTTP :7880--> Stick firmware 
 Claude desktop app <------ Bluetooth (Hardware Buddy protocol) ----+
 ```
 
-- **Firmware** (`firmware/`): Arduino/PlatformIO for the StickS3. `src/main.cpp` holds the state, HTTP API and UI; `voice.inc` push-to-talk; `update.inc` update checks, install and the boot guard; `setup_page.html` the setup wizard; `embed_files.py` embeds the installer, hook and wizard into the image at build time so the Stick can serve them.
+- **Firmware** (`firmware/`): Arduino/PlatformIO for the StickS3. `src/main.cpp` holds the state, HTTP API and UI; `voice.inc` push-to-talk; `update.inc` update checks, install and the boot guard; `bridge.inc` the client for a bridge; `setup_page.html` the setup wizard; `embed_files.py` embeds the installer, hook and wizard into the image at build time so the Stick can serve them.
+- **Bridge** (`bridge/claudestick_bridge.py`): the Stick's API without the hardware, for use away from home. Standard-library Python; see [REMOTE.md](REMOTE.md).
 - **Hook** (`hooks/claudestick_hook.py`): one standard-library Python script registered for the Claude Code hook events and as the status-line command. It never blocks Claude when the Stick is unreachable (it backs off for 20 s after a failure).
 - **Installer** (`install.py`): served by the Stick, so a new machine needs only a `curl | python3`. It edits `~/.claude/settings.json` (with a backup), writes `~/.claudestick/config.json`, and restores everything on `--uninstall`.
 - **Web flasher** (`web/`): ESP Web Tools (vendored) plus `manifest.json` and `ota.json`, published to GitHub Pages by CI.
@@ -40,9 +41,28 @@ Every call except the pages below carries `X-Token: <token>` (or `?t=`). Hooks p
 | `POST/GET/DELETE /permission`, `/stop` | Create, poll and cancel approvals and Done/Question cards. |
 | `GET /state`, `POST /act` | What the phone page shows; its actions (approve, deny, choose, say, macro, stop, pin, remote). |
 | `GET/POST /config` | Settings shared with every hook (macros, waits, voice, ntfy). |
+| `POST /stt` | Bridge only: WAV in, `{"text":...}` out. |
 | `POST /ota` | Upload a firmware image by hand. |
 | `GET /`, `/setup`, `/install.py`, `/claudestick_hook.py` | Phone page, setup wizard, installer, hook. |
-| `/setup/info`, `/setup/scan`, `/setup/wifi`, `/setup/preview`, `/setup/time`, `/setup/save` | The setup wizard's backend; open until setup is finished, then token-gated. |
+| `/setup/info`, `/setup/scan`, `/setup/wifi`, `/setup/wifi/add`, `/setup/wifi/forget`, `/setup/bridge`, `/setup/preview`, `/setup/time`, `/setup/save` | The setup wizard's backend; open until setup is finished, then token-gated. |
+
+## The bridge
+
+`Core` in `claudestick_bridge.py` ports the firmware's session, approval and Done-card logic (same ids-by-poll protocol, same 15 s staleness, same pinning), and the HTTP layer adds what a network service needs: token check in constant time, per-address lockout, size limits, a connection cap, private files for the token and settings, optional TLS. `tests/py/contract_bridge.py` replays one scripted conversation against the bridge and the firmware mock and requires identical answers.
+
+Differences from the Stick, all additive:
+
+- **State versions.** `/state` carries `v`, which changes whenever anything that matters changes (computed by comparing snapshots, so no code path can forget to bump it). `GET /state?v=N` answers `{"v":N,"same":true}` when nothing changed: that is the Stick's normal poll, a few dozen bytes over a kept-alive connection. `?n=1` is the Stick's view: its newest 6 sessions, oldest 8 approvals, 4 cards, clipped text.
+- **Presence.** Whoever polls `/state` (the Stick, the phone page) counts as connected for 30 s. Effective *remote* is the remote setting and the auto rule (answered on the Stick or phone more recently than typed at the keyboard) *and* someone connected, so a switched-off Stick never leaves prompts waiting.
+- **Ids** start at 1,000,000 so they can't collide with a directly connected Stick's.
+- **`/stt`** takes a WAV and forwards it, as multipart with the model and language from the bridge's settings and the key from the bridge's settings, to an OpenAI-compatible endpoint.
+- **`/config`** hides secrets unless `?secrets=1` (the hook asks; the page and the Stick don't). `public_url` is what ntfy buttons and the phone link use.
+
+### The Stick as a client (`bridge.inc`)
+
+`bridgeTick()` runs on the main loop: GET `/state?n=1&v=<held>` every 1.5 s (4 s dimmed), over one kept-alive `HTTPClient` with the Mozilla root bundle. `bridgeApply()` mirrors sessions, approvals, cards, macro labels, limits and tokens into the same tables hooks fill, flagged `bridge`, so every screen works unchanged. Entries are replaced wholesale on each full state; hook-side expiry skips them. Alerts are derived from changes (new approval, session done, to-do finished) and suppressed for the first state after connecting. Answers go through small functions (`decide`, `stopResult`, `sessionStop`, `deliverText`) that act locally for hook entries and POST `/act` for bridge entries; a failed POST leaves the card up. Two failed polls drop everything from the bridge and start a back-off (3 s doubling to 60 s). TLS refuses to start below 32 KB of free internal RAM and waits for the clock.
+
+Wi-Fi: up to four networks are kept (`nets` in preferences; the first is also in `ssid`/`pass` for older tools). With more than one, a disconnected Stick runs an asynchronous scan and joins the strongest known network, taking turns when none is in sight.
 
 ## Updates and rollback
 
@@ -63,11 +83,12 @@ Screen brightness drops after 1 min and the screen turns off after 3 min; the CP
 
 ```
 firmware/        Arduino/PlatformIO project (src/, setup_page.html, embed_files.py, data/cert)
+bridge/          claudestick_bridge.py (+ systemd unit example)
 hooks/           claudestick_hook.py
 install.py       installer served by the Stick
 web/             web flasher (index.html, manifest.json, vendor/)
 tools/           build_web.sh, verify_release.py, mock_device.py, gen_font.py, gen_tinyfont.py, gen_ca_bundle.sh
-tests/           py/ (hook, installer, release checks), host/ (firmware logic + screens on the host), browser/
+tests/           py/ (hook, installer, release checks, bridge), host/ (firmware logic + screens on the host), browser/
 docs/            screenshots and this document
 .github/         CI: build, release checks, tests, Pages deploy
 ```

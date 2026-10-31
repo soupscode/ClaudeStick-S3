@@ -14,6 +14,7 @@
 - **Macros and remote mode:** "Continue", "Next phase", "Run tests + fix", your own. In remote mode Claude is told you're on a tiny device and asks short multiple-choice questions you answer with a button.
 - **Push-to-talk:** hold a button, speak, confirm; the text goes to Claude (needs any OpenAI-compatible speech-to-text server).
 - **Phone page and push alerts:** a web page served by the Stick mirrors everything, and [ntfy](https://ntfy.sh) notifications carry Approve/Always/Deny buttons.
+- **Away from home:** a small bridge at home relays your sessions, so the Stick (or your phone) works from the office or a phone hotspot. See [docs/REMOTE.md](docs/REMOTE.md).
 - **Updates over Wi-Fi:** the Stick offers new versions with a changelog, installs them in one press, and rolls back by itself if a build won't boot.
 
 ## What you need
@@ -86,11 +87,15 @@ Hold A, speak (up to 20 s), release, review the text, press A to send. It answer
 
 ### Phone page
 
-Open `http://<stick-ip>:7880/?t=<token>` once and add it to your home screen. It approves, denies, answers questions, taps macros, stops a session and sends free text. For use away from home, put the Stick and your phone on a VPN such as Tailscale, or use Claude Code's built-in Remote Control to type into a session from the Claude app.
+Open `http://<stick-ip>:7880/?t=<token>` once and add it to your home screen. It approves, denies, answers questions, taps macros, stops a session and sends free text. For use away from home, run the [bridge](docs/REMOTE.md): it serves the same page at an HTTPS address of your choosing, with or without a Stick. A VPN such as Tailscale works too, or use Claude Code's built-in Remote Control to type into a session from the Claude app.
 
 ### Settings
 
 Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Every machine's hook fetches these from the Stick, so you edit them once: macros (`label | instruction`, up to 10), approval waits, the Done menu mode, voice, ntfy, time zone and clock style, text style, volume, tilt, and firmware updates. The menu on the Stick also has the common toggles (remote mode, buddy, text style, 12/24-hour clock, flip screen).
+
+### Away from home
+
+Run `python3 bridge/claudestick_bridge.py` on a computer at home, point your machines' hooks at it, expose it with an HTTPS reverse proxy (or a VPN), and give the Stick the bridge's address, token and your phone's hotspot as a second Wi-Fi network. Approvals, Done cards, questions, voice, macros and usage then work from any network. Everything is in [docs/REMOTE.md](docs/REMOTE.md).
 
 ## Updates
 
@@ -103,17 +108,18 @@ The Stick checks your update source (the flasher site) 90 s after boot and every
 - **Upside down:** menu → *flip screen*. If tilt scrolls the wrong way, run `tilt flip` in the flasher's *Logs & Console*.
 - **Title says `claudestick:safe`:** Bluetooth was switched off because the Stick crashed repeatedly on boot. Open *Logs & Console* and run `info`; the "last reset" line says why. Include it in a bug report.
 - **A machine can't reach the Stick:** re-run the install command with `--test`; it says whether the Stick answers and whether the token is accepted. Check that both are on the same network. If the IP changed, the hook finds the Stick again by its device id at the next prompt.
+- **Several Wi-Fi networks:** the Stick remembers up to four (settings → wi-fi networks) and joins the strongest one in range.
 - **Serial commands** (*Logs & Console* or any serial monitor): `info`, `wifi <ssid> <pass>`, `token <t>`, `name <n>`, `tilt on|off|flip`, `flip`, `tz <POSIX rule>`, `clock 12|24`, `font 0|1`, `setup`, `forget`, `reboot`.
 - **Hold B at power-on** starts in safe mode (no Bluetooth); **hold A+B at power-on** forgets Wi-Fi and reruns setup.
 - **You can't brick it with firmware.** The ESP32-S3's first-stage bootloader is in ROM, so download mode (hold the side button while plugging in USB) always works. From there, flash again from the web flasher, `pio run -t upload`, or erase with `esptool.py --chip esp32s3 erase_flash`. This firmware never touches eFuses (secure boot or flash encryption), the only way to lock an ESP32 permanently.
 
 ## Privacy and security
 
-Nothing leaves your network except what you configure: update checks go to your update source, voice audio to your speech-to-text server, ntfy messages to your ntfy server. The Stick and the hooks talk over **plain HTTP with a shared token**, so keep the Stick on a trusted network. Until setup is finished, `/setup` is open to anyone on the network or hotspot so it can show you the token; finish setup promptly. Firmware updates are not code-signed: they are trusted because they come from your update source over verified HTTPS, so protect the repo and site that serve them. See [SECURITY.md](SECURITY.md).
+Nothing leaves your network except what you configure: update checks go to your update source, voice audio to your speech-to-text server, ntfy messages to your ntfy server. The Stick and the hooks talk over **plain HTTP with a shared token**, so keep the Stick on a trusted network. For use away from home the bridge adds HTTPS (through your reverse proxy), a per-address lockout and size limits; anyone with its token can approve what Claude runs, so treat it like an SSH key. Until setup is finished, `/setup` is open to anyone on the network or hotspot so it can show you the token; finish setup promptly. Firmware updates are not code-signed: they are trusted because they come from your update source over verified HTTPS, so protect the repo and site that serve them. See [SECURITY.md](SECURITY.md).
 
 ## How it works, and developing it
 
-The hooks POST events to the Stick, which polls rather than holds connections open; plan limits arrive through the status line. The design, API and hook outputs are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). To build, test, release or contribute, see [CONTRIBUTING.md](CONTRIBUTING.md). You can try everything without hardware: `python3 tools/mock_device.py --token test123` serves the Stick's API, phone page and setup wizard on your machine.
+The hooks POST events to the Stick (or to the bridge, which the Stick then polls), which polls rather than holds connections open; plan limits arrive through the status line. The design, API and hook outputs are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). To build, test, release or contribute, see [CONTRIBUTING.md](CONTRIBUTING.md). You can try everything without hardware: `python3 tools/mock_device.py --token test123` serves the Stick's API, phone page and setup wizard on your machine.
 
 Fork it freely: CI bakes `https://<owner>.github.io/<repo>/` into the firmware as its update source, so a fork's Sticks update from the fork. Enable Pages (Source: GitHub Actions), push, and the flasher and updates work. Change the copyright holder in `LICENSE` and the wording in `web/index.html`.
 

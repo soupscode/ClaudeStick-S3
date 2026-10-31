@@ -3,7 +3,8 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 fail=0
-for t in update_test time_test rssi_test usage_test fold_test; do
+mkdir -p out && python3 ../py/gen_bridge_fixture.py out/bridge_state.json >/dev/null || { echo "FAIL host/bridge fixture"; fail=1; }
+for t in update_test time_test rssi_test usage_test fold_test bridge_test; do
   ./build.sh "$t.cpp" "$t" || { echo "FAIL build $t"; fail=1; continue; }
   out=$(./bin/$t 2>&1); rc=$?
   p=$(printf '%s\n' "$out" | grep -c '^PASS'); f=$(printf '%s\n' "$out" | grep -c '^FAIL')

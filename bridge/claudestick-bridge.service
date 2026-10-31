@@ -1,0 +1,25 @@
+# Example systemd unit for the ClaudeStick bridge. Edit User and the paths, then:
+#   sudo cp bridge/claudestick-bridge.service /etc/systemd/system/
+#   sudo systemctl enable --now claudestick-bridge
+#   journalctl -u claudestick-bridge -f
+# Drop --trust-proxy if nothing sits in front of it; use --host 127.0.0.1 when the proxy is on the same machine.
+[Unit]
+Description=ClaudeStick bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=claudestick
+ExecStart=/usr/bin/python3 /opt/claudestick/bridge/claudestick_bridge.py --host 127.0.0.1 --trust-proxy
+Environment=CLAUDESTICK_BRIDGE_DIR=/var/lib/claudestick-bridge
+StateDirectory=claudestick-bridge
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/claudestick-bridge
+
+[Install]
+WantedBy=multi-user.target

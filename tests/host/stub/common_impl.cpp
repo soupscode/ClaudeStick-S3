@@ -4,14 +4,20 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <string>
+#include <vector>
 M5Unified M5; WiFiClass WiFi; HWSerialStub Serial; EspClass ESP; MDNSResponder MDNS;
 namespace fonts { const IFont Font0, Font2, Font4; }
-unsigned long NOW = 100000;
+unsigned long NOW = 100000; int TONES = 0;
 std::string GOOD_PASS = "goodpass";
 unsigned long millis(){ return NOW; } void delay(unsigned long d){ NOW += d; } uint32_t esp_random(){ return 0x1234abcd; }
 void WiFiClass::begin(const char* s, const char* p){ st = (p && GOOD_PASS == p) ? WL_CONNECTED : WL_IDLE_STATUS; }
 bool WiFiClass::softAP(const char*){return true;} IPAddress WiFiClass::softAPIP(){return IPAddress(192,168,4,1);} bool WiFiClass::softAPdisconnect(bool){return true;}
-int16_t WiFiClass::scanNetworks(){return 2;} String WiFiClass::SSID(uint8_t i){return i?"neighbors":"home-wifi";} int32_t WiFiClass::RSSI(uint8_t i){return i?-80:-48;}
+// Tests can set SCAN to what the radio "sees"; SCAN_PENDING makes an async scan stay unfinished.
+std::vector<std::pair<std::string,int>> SCAN; bool SCAN_PENDING = false; int SCANS_STARTED = 0;
+int16_t WiFiClass::scanNetworks(bool async){ SCANS_STARTED++; if (async) { SCAN_PENDING = true; return WIFI_SCAN_RUNNING; } return SCAN.empty() ? 2 : (int16_t)SCAN.size(); }
+int16_t WiFiClass::scanComplete(){ if (SCAN_PENDING) return WIFI_SCAN_RUNNING; return SCAN.empty() ? 2 : (int16_t)SCAN.size(); }
+String WiFiClass::SSID(uint8_t i){ if (!SCAN.empty()) return String(SCAN[i].first.c_str()); return i?"neighbors":"home-wifi"; }
+int32_t WiFiClass::RSSI(uint8_t i){ if (!SCAN.empty()) return SCAN[i].second; return i?-80:-48; }
 wifi_auth_mode_t WiFiClass::encryptionType(uint8_t i){return i?WIFI_AUTH_OPEN:WIFI_AUTH_WPA2_PSK;} void WiFiClass::scanDelete(){}
 WebServer::WebServer(int){} void WebServer::on(const String&, HTTPMethod, THandlerFunction){} void WebServer::onNotFound(THandlerFunction){}
 void WebServer::begin(){} void WebServer::stop(){} void WebServer::handleClient(){} std::string REQ_BODY, LAST_SENT; int LAST_CODE = 0;
@@ -24,13 +30,28 @@ void bleInit(const char*){} bool bleConnected(){return BLE_ON;} bool bleSecure()
 void bleClearBonds(){} size_t bleAvailable(){return 0;} int bleRead(){return -1;} size_t bleWrite(const uint8_t*, size_t n){return n;}
 #include <HTTPClient.h>
 #include <string>
-extern std::string HTTP_BODY;
+extern std::string HTTP_BODY, LAST_URL; extern int HTTP_CODE;
 #include <Update.h>
 UpdateClass Update;
 bool UpdateClass::begin(size_t){return true;} size_t UpdateClass::write(uint8_t*, size_t n){return n;} bool UpdateClass::end(bool){return true;}
 bool UpdateClass::hasError(){return false;} bool UpdateClass::isFinished(){return true;} void UpdateClass::abort(){}
 bool HTTPClient::begin(const String&){return true;} void HTTPClient::setTimeout(uint16_t){}
-void HTTPClient::addHeader(const String&, const String&){} int HTTPClient::POST(uint8_t*, size_t){return 200;} String HTTPClient::getString(){return String(HTTP_BODY.c_str());} void HTTPClient::end(){}
+// A bridge client test scripts replies with HTTP_SCRIPT (one {status, body} per request, in order) and reads HTTP_LOG back.
+struct HttpScripted { int code; std::string body; };
+std::vector<HttpScripted> HTTP_SCRIPT; std::vector<std::string> HTTP_LOG; std::string HTTP_HEADERS, HTTP_RESP; bool HTTP_RESP_SET = false;
+bool TLS_UP = false; int TLS_STOPS = 0, TLS_CONNECTS = 0, HTTP_REUSE = 0;
+void HTTPClient::addHeader(const String& k, const String& v){ HTTP_HEADERS += std::string(k.c_str()) + ": " + v.c_str() + "\n"; }
+int HTTPClient::POST(uint8_t*, size_t){return 200;} String HTTPClient::getString(){return String((HTTP_RESP_SET ? HTTP_RESP : HTTP_BODY).c_str());} void HTTPClient::end(){ HTTP_HEADERS.clear(); }
+void HTTPClient::setConnectTimeout(int32_t){} void HTTPClient::setReuse(bool r){ HTTP_REUSE += r; } int HTTPClient::getSize(){ return (int)(HTTP_RESP_SET ? HTTP_RESP : HTTP_BODY).size(); }
+int HTTPClient::sendRequest(const char* m, uint8_t* body, size_t n){
+  HTTP_LOG.push_back(std::string(m) + " " + LAST_URL + "\n" + HTTP_HEADERS + std::string((const char*)(body ? body : (uint8_t*)""), body ? n : 0));
+  if (HTTP_SCRIPT.empty()) { HTTP_RESP_SET = false; return HTTP_CODE; }
+  HttpScripted r = HTTP_SCRIPT.front(); HTTP_SCRIPT.erase(HTTP_SCRIPT.begin());
+  if (r.code > 0) { TLS_UP = true; HTTP_RESP = r.body; HTTP_RESP_SET = true; } else TLS_UP = false;
+  return r.code;
+}
+bool WiFiClient::connected(){ return TLS_UP; } void WiFiClient::stop(){ if (TLS_UP) TLS_STOPS++; TLS_UP = false; }
+void WiFiClientSecure::setHandshakeTimeout(unsigned long){}
 String HTTPClient::errorToString(int){return "err";} void WiFiClientSecure::setInsecure(){}
 bool setCpuFrequencyMhz(uint32_t){return true;} uint32_t getCpuFrequencyMhz(){return 240;}
 void MDNSResponder::addServiceTxt(const char*, const char*, const char*, const char*){}

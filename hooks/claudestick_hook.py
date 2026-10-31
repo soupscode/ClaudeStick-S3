@@ -131,6 +131,7 @@ def load_config():
         "remote_off_text": REMOTE_OFF,
         "ntfy_url": "",
         "ntfy_token": "",
+        "public_url": "",                 # how your phone reaches the bridge (ntfy buttons); unset = http://host:port
         "macros": DEFAULT_MACROS,
     }
     local = _read_json(CONFIG_PATH) or {}
@@ -354,7 +355,7 @@ class Device:
         in step with the Stick's firmware (it serves the matching hook)."""
         if _recent(DEVICE_CFG, DEVICE_CFG_TTL_S):
             return
-        r = self.call("GET", "/config", timeout=1.0)
+        r = self.call("GET", "/config?secrets=1", timeout=1.0)   # the bridge hides secrets unless asked
         if r is not None:
             _write_json(DEVICE_CFG, r)
             self.cfg.update(load_config())
@@ -797,7 +798,7 @@ def notify(cfg, title, body, priority="default", actions=None):
     """Optional phone push via ntfy. Action buttons call the Stick directly (phone must reach it)."""
     if not cfg.get("ntfy_url"):
         return
-    base = f"http://{cfg['host']}:{cfg['port']}"
+    base = (cfg.get("public_url") or "").rstrip("/") or f"http://{cfg['host']}:{cfg['port']}"
     req = urllib.request.Request(cfg["ntfy_url"], data=clip(body, 400).encode(), method="POST")
     req.add_header("Title", clip(title, 80))
     req.add_header("Priority", priority)

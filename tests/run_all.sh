@@ -25,6 +25,9 @@ run() {   # run <label> <command...>: pass/fail from the exit code and any FAIL 
 if [ $py -eq 1 ]; then
   run py/hook_unit         python3 tests/py/hook_unit.py
   run py/e2e_hooks         python3 tests/py/e2e_hooks.py
+  run py/e2e_bridge        python3 tests/py/e2e_bridge.py
+  run py/e2e_bridge_hooks  python3 tests/py/e2e_bridge_hooks.py
+  run py/contract_bridge   python3 tests/py/contract_bridge.py
   run py/e2e_usage         python3 tests/py/e2e_usage.py
   run py/e2e_statusline    python3 tests/py/e2e_statusline.py
   run py/selfupdate        python3 tests/py/selfupdate.py
@@ -43,6 +46,7 @@ if [ $browser -eq 1 ]; then
     run browser/time_zone_step python3 tests/browser/time_zone_step.py
     run browser/setup_flow     python3 tests/browser/setup_flow.py
     run browser/phone_page     python3 tests/browser/phone_page.py
+    run browser/bridge_cards   python3 tests/browser/bridge_cards.py
   else
     echo "skip browser tests (playwright not installed)"
   fi

@@ -2,9 +2,12 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
-## Unreleased
-- Tests live in the repo (`tests/`) and gate publishing in CI
-- Release-ready docs: README, docs/HOW_IT_WORKS.md, CONTRIBUTING.md, SECURITY.md
+## 0.9.0
+- Away from home: follow your home Claude sessions from any Wi-Fi through a bridge (docs/REMOTE.md)
+- Remembers up to four Wi-Fi networks (home, a phone hotspot) and joins the strongest
+- Voice, phone page and alert buttons work through the bridge
+- Fix: tying the Stick to a session that then ended skipped other sessions' prompts
+- Tests live in the repo and gate publishing in CI; release-ready docs
 
 ## 0.8.1
 - Update checks wait for the clock and for a quiet moment

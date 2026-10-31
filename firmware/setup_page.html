@@ -31,13 +31,30 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <label>remote mode</label><select id=remote><option value=auto>auto: follows where you last answered (recommended)</option><option value=on>always on</option><option value=off>always off</option></select>
 <button onclick=save()>save</button><span id=smsg class=d></span></div>
 
+<div class="c hide" id=nets><div class=t>wi-fi networks</div>
+<div class=d>The Stick joins the strongest one it can see. Add your phone's hotspot (2.4 GHz, WPA2) to use it away from home.</div>
+<div id=netlist></div>
+<label>add a network</label><input id=nn placeholder="network name (SSID)" autocomplete=off>
+<label>password</label><input id=np type=password autocomplete=off>
+<button class=s onclick=addNet()>add</button><span id=wnmsg class=d></span></div>
+
+<div class="c hide" id=brcard><div class=t>remote access (bridge)</div>
+<div class=d>Run the ClaudeStick bridge on a computer at home and the Stick follows your Claude sessions from any Wi-Fi: approve, talk to Claude, stop it. See docs/REMOTE.md.</div>
+<label>bridge address</label><input id=bu placeholder="https://stick.example.com" autocomplete=off>
+<label>bridge token</label><input id=btk type=password autocomplete=off>
+<button onclick=saveBridge()>connect</button><button class=s onclick=clearBridge()>turn off</button><span id=bmsg class=d></span></div>
+
 <div class="c hide" id=done><div class=t>hook it up to Claude Code</div>
 <div class=d>Run on each machine where you use <b>claude</b> (needs python3):</div><pre id=cmd></pre>
 <div class=d>Windows PowerShell:</div><pre id=cmdw></pre>
 <div class=t style="margin-top:14px">phone remote</div><div class=d>Bookmark on your phone (contains your token):</div><pre id=phone></pre>
-<div class=d>Desktop app: Help &rarr; Troubleshooting &rarr; Enable Developer Mode &rarr; Developer &rarr; Open Hardware Buddy &rarr; pick <b id=bt></b>.</div></div>
+<div class=d id=btline>Desktop app: Help &rarr; Troubleshooting &rarr; Enable Developer Mode &rarr; Developer &rarr; Open Hardware Buddy &rarr; pick <b id=bt></b>.</div>
+<div class=hide id=sc><div class=t style="margin-top:14px">your Stick</div><div class=d>Settings page &rarr; remote access (bridge):</div><pre id=stickcfg></pre></div></div>
 
 <div class="hide" id=settings>
+<div class="c hide" id=pubcard><div class=t>public address</div><div class=d>How your phone and the Stick reach this bridge from outside: your reverse proxy's address. Used for the phone link and the buttons in ntfy alerts.</div>
+<label>address</label><input id=pubu placeholder="https://stick.example.com" autocomplete=off></div>
+
 <div class=c><div class=t>macros</div><div class=d>One per line: <code>label | instruction</code>. Shown on the Stick, the phone page and the Done menu. Max 10.</div>
 <textarea id=macros rows=8></textarea></div>
 
@@ -53,12 +70,12 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <div class=g2><div><label>model</label><input id=sttm placeholder="whisper-1"></div><div><label>language (optional)</label><input id=sttl placeholder="en"></div></div>
 <label>API key (optional)</label><input id=sttk type=password placeholder="leave blank to keep"></div>
 
-<div class=c><div class=t>phone alerts (optional)</div><div class=d>Push via <b>ntfy</b> (self-host it or use ntfy.sh) in remote mode, with Approve / Always / Deny buttons that work when your phone can reach the Stick (home Wi-Fi or Tailscale).</div>
+<div class=c><div class=t>phone alerts (optional)</div><div class=d>Push via <b>ntfy</b> (self-host it or use ntfy.sh) in remote mode, with Approve / Always / Deny buttons that work when your phone can reach this device (home Wi-Fi, Tailscale, or a bridge's public address).</div>
 <label>ntfy topic URL</label><input id=nu placeholder="https://ntfy.example.com/claude-x7f3">
 <label>ntfy access token (optional)</label><input id=nt type=password placeholder="leave blank to keep">
 <button class=s onclick=ntest()>send test</button><span id=nmsg class=d></span></div>
 
-<div class=c><div class=t>firmware</div><div class=d id=fwv></div>
+<div class=c id=fwcard><div class=t>firmware</div><div class=d id=fwv></div>
 <label>update source (the web flasher's URL)</label><input id=uu placeholder="https://you.github.io/claudestick/">
 <button class=s onclick=check()>check for update</button><span id=umsg class=d></span>
 <div class=d style="margin-top:10px">or upload a firmware file (claudestick-app.bin):</div><input type=file id=uf accept=".bin"><button class=s onclick="flash(uf.files[0])">upload</button>
@@ -70,6 +87,8 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 let T=new URLSearchParams(location.search).get('t')||'';let I={},C={};
 const $=id=>document.getElementById(id);
 const q=p=>p+(T?(p.includes('?')?'&':'?')+'t='+T:'');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const msgOf=e=>{try{return JSON.parse(e.message).error||e.message}catch(x){return e.message}};
 async function api(p,b){const r=await fetch(q(p),{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});if(!r.ok)throw new Error(await r.text());return r.json()}
 // [label, IANA id, POSIX rule (knows daylight saving), other IANA ids that share the rule]
 const Z=[
@@ -129,6 +148,7 @@ async function saveTime(quiet){const i=+$('tz').value,z=Z[i];const body={tz:z?z[
 try{const r=await api('/setup/time',body);I.tz=r.tz;I.tz_name=r.tz_name;I.clock24=r.clock24;if(!quiet)$('tmsg').innerHTML=' <span class=ok>saved'+(r.clock?' · the Stick shows '+r.clock:'')+'</span>'}catch(e){if(!quiet)$('tmsg').innerHTML=' <span class=bad>could not save</span>'}}
 async function load(){try{I=await api('/setup/info')}catch(e){$('hello').textContent='setup is finished. open this page with ?t=<token> to change settings.';return}
 if(!T&&I.token&&I.done)T=I.token;
+if(I.bridge){$('hello').textContent='bridge · v'+I.fw;['wifi','time','me','nets','brcard','fwcard'].forEach(i=>$(i).classList.add('hide'));$('pubcard').classList.remove('hide');T=T||I.token;show(I);loadConf();return}
 $('hello').textContent=(I.done?'settings':'first-time setup')+' · fw '+I.fw;
 $('wifi').classList.toggle('hide',I.wifi.connected&&!I.ap);$('wform').classList.toggle('hide',I.wifi.connected);
 if(I.wifi.connected){$('wmsg').innerHTML='<span class=ok>connected to '+I.wifi.ssid+' as '+I.wifi.ip+'</span>'+(I.ap?'<br>switch your phone back to your home Wi-Fi, then open <b>http://'+I.wifi.ip+':'+I.port+'/setup</b> to finish.':'')}
@@ -136,7 +156,17 @@ $('me').classList.toggle('hide',!I.wifi.connected&&!I.done);$('time').classList.
 if(!$('tz').options.length)fillTz();pickTz();if(I.wifi.connected&&!I.tz_name&&!I.tz&&!I.done)saveTime(true);
 $('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('remote').value=I.remote;
 $('buddy').innerHTML=I.buddies.map((b,i)=>`<option value=${i}>${b}</option>`).join('');$('buddy').value=I.buddy;
+$('nets').classList.toggle('hide',!I.done);$('brcard').classList.toggle('hide',!I.done);if(I.done){drawNets();brFill()}
 if(I.done){T=T||I.token;show(I);loadConf()}if(I.ap&&!I.wifi.connected)scan()}
+function drawNets(){$('netlist').innerHTML=(I.wifi.saved||[]).map((s,i)=>`<div class=row style="justify-content:space-between"><span>${esc(s)}${i==0?' <span class=d>(first choice)</span>':''}</span><button class=s data-s="${esc(s)}" onclick="forgetNet(this.dataset.s)">forget</button></div>`).join('')||'<div class=d>none yet</div>'}
+async function addNet(){const s=$('nn').value.trim();if(!s){$('wnmsg').innerHTML=' <span class=bad>type the network name</span>';return}
+try{await api('/setup/wifi/add',{ssid:s,pass:$('np').value});$('nn').value=$('np').value='';I=await api('/setup/info');drawNets();$('wnmsg').innerHTML=' <span class=ok>saved</span>'}catch(e){$('wnmsg').innerHTML=' <span class=bad>'+esc(msgOf(e))+'</span>'}}
+async function forgetNet(s){try{await api('/setup/wifi/forget',{ssid:s});I=await api('/setup/info');drawNets();$('wnmsg').textContent=''}catch(e){$('wnmsg').innerHTML=' <span class=bad>'+esc(msgOf(e))+'</span>'}}
+function brFill(){const b=I.link||{};if(b.url)$('bu').value=b.url;$('btk').placeholder=b.set?'(set) leave blank to keep':"paste it from the bridge's setup page";
+$('bmsg').innerHTML=b.set?(b.up?' <span class=ok>connected</span>':' <span class=bad>offline'+(b.error?': '+esc(b.error):'')+'</span>'):''}
+async function saveBridge(){$('bmsg').textContent=' connecting…';try{const r=await api('/setup/bridge',{url:$('bu').value.trim(),token:$('btk').value.trim()});$('btk').value='';I=await api('/setup/info');
+if(!r.ok)$('bmsg').innerHTML=' <span class=bad>'+esc(r.error||'could not connect')+'</span>';else brFill()}catch(e){$('bmsg').innerHTML=' <span class=bad>'+esc(msgOf(e))+'</span>'}}
+async function clearBridge(){try{await api('/setup/bridge',{url:''});$('bu').value='';$('btk').value='';I=await api('/setup/info');brFill();$('bmsg').textContent=' turned off'}catch(e){$('bmsg').innerHTML=' <span class=bad>'+esc(msgOf(e))+'</span>'}}
 async function scan(){$('ssid').innerHTML='<option>scanning…</option>';try{const n=await api('/setup/scan');$('ssid').innerHTML=n.map(x=>`<option>${x.ssid.replace(/</g,'&lt;')}</option>`).join('')}catch(e){$('ssid').innerHTML=''}}
 async function joinWifi(){const s=$('ssid2').value||$('ssid').value;$('wmsg').textContent='connecting to '+s+'…';await api('/setup/wifi',{ssid:s,pass:$('pw').value});
 for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,1000));try{I=await api('/setup/info');if(I.wifi.connected)return load()}catch(e){}}$('wmsg').innerHTML='<span class=bad>could not connect. check the password (2.4 GHz only).</span>'}
@@ -146,15 +176,17 @@ $('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to 
 function show(r){const h=r.ip||I.wifi.ip,p=r.port||I.port,t=r.token||T;$('done').classList.remove('hide');
 $('cmd').textContent=`curl -s http://${h}:${p}/install.py | python3 - --host ${h} --port ${p} --token ${t}`;
 $('cmdw').textContent=`irm http://${h}:${p}/install.py -OutFile cs_install.py; python cs_install.py --host ${h} --port ${p} --token ${t}`;
-$('phone').textContent=`http://${h}:${p}/?t=${t}`;$('bt').textContent=r.bt||I.bt}
+$('phone').textContent=(r.public_url||`http://${h}:${p}`)+`/?t=${t}`;
+if(I.bridge){$('btline').classList.add('hide');$('sc').classList.remove('hide');$('stickcfg').textContent=`address  ${r.public_url||'(set the public address below)'}\ntoken    ${t}`}else $('bt').textContent=r.bt||I.bt}
 async function loadConf(){try{C=await api('/config')}catch(e){return}$('settings').classList.remove('hide');
 $('macros').value=(C.macros||[]).map(m=>m.label+' | '+m.text).join('\n');
 $('pw1').value=C.permission_wait_s;$('pw2').value=C.remote_permission_wait_s;$('sm').value=C.stop_menu;$('sw').value=C.stop_wait_s;$('qd').checked=C.questions_on_device;
 $('stt').value=C.stt_url||'';$('sttm').value=C.stt_model||'';$('sttl').value=C.stt_language||'';$('nu').value=C.ntfy_url||'';$('uu').value=C.update_url||'';
-$('sttk').placeholder=C.stt_key?'(set) leave blank to keep':'none';$('nt').placeholder=C.ntfy_token?'(set) leave blank to keep':'none';$('fwv').textContent='installed: '+I.fw}
+$('sttk').placeholder=(C.stt_key||C.stt_key_set)?'(set) leave blank to keep':'none';$('nt').placeholder=(C.ntfy_token||C.ntfy_token_set)?'(set) leave blank to keep':'none';$('fwv').textContent='installed: '+I.fw;$('pubu').value=C.public_url||''}
 async function saveConf(){const m=$('macros').value.split('\n').map(l=>l.split('|')).filter(p=>p.length>1&&p[0].trim()).slice(0,10).map(p=>({label:p[0].trim().slice(0,28),text:p.slice(1).join('|').trim()}));
 const b={macros:m,permission_wait_s:+$('pw1').value,remote_permission_wait_s:+$('pw2').value,stop_menu:$('sm').value,stop_wait_s:+$('sw').value,questions_on_device:$('qd').checked,
-stt_url:$('stt').value.trim(),stt_model:$('sttm').value.trim()||'whisper-1',stt_language:$('sttl').value.trim(),ntfy_url:$('nu').value.trim(),update_url:$('uu').value.trim()};
+stt_url:$('stt').value.trim(),stt_model:$('sttm').value.trim()||'whisper-1',stt_language:$('sttl').value.trim(),ntfy_url:$('nu').value.trim()};
+if(I.bridge)b.public_url=$('pubu').value.trim();else b.update_url=$('uu').value.trim();
 if($('sttk').value)b.stt_key=$('sttk').value;if($('nt').value)b.ntfy_token=$('nt').value;
 try{C=await api('/config',b);$('cmsg').innerHTML=' <span class=ok>saved · hooks pick it up within a minute</span>'}catch(e){$('cmsg').innerHTML=' <span class=bad>'+e.message+'</span>'}}
 async function ntest(){const u=$('nu').value.trim();if(!u)return;const h={Title:'ClaudeStick test',Tags:'robot'};const k=$('nt').value;if(k)h.Authorization='Bearer '+k;

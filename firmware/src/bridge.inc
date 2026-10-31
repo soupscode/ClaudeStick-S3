@@ -13,6 +13,7 @@ static const size_t   BRIDGE_MAX_BODY       = 48 * 1024;
 
 static String   bridgeUrl, bridgeTok;       // "https://stick.example.com" (no trailing slash) and its token
 // bridgeUp (the last polls worked) and bridgeRemote (the bridge's verdict on remote mode) are declared in main.cpp.
+static bool     bridgeEverUp = false;       // it has worked at least once since boot (so "back again" is worth a notice)
 static bool     bridgeSynced = false;       // first state since (re)connecting is a baseline: no alerts for it
 static uint32_t bridgeV = 0;                // version of the state we hold (0 = none)
 static uint32_t bridgeNextPoll = 0;
@@ -274,10 +275,16 @@ static void bridgeDrop() {
   dirty = true;
 }
 
+// Away from home nobody is watching the Stick's screen: say so when the link goes, because Claude may be waiting on you.
+static void bridgeLost(const String& why) {
+  notice("bridge", "lost: " + why, C_BAD_U, 5000);
+  beep(3);
+}
+
 static void bridgeFail(const String& why) {
   if (why.length()) bridgeErr = why;
   if (bridgeFails < 250) bridgeFails++;
-  if (bridgeUp && bridgeFails >= 2) { bridgeUp = false; bridgeDrop(); }
+  if (bridgeUp && bridgeFails >= 2) { bridgeUp = false; bridgeDrop(); bridgeLost(bridgeErr.length() ? bridgeErr : String("no reply")); }
   uint32_t back = BRIDGE_POLL_ACTIVE_MS << (bridgeFails > 6 ? 6 : bridgeFails);   // 3 s, 6 s, ... capped
   bridgeNextPoll = millis() + (back > BRIDGE_POLL_MAX_MS ? BRIDGE_POLL_MAX_MS : back);
   dirty = true;
@@ -289,7 +296,11 @@ static void bridgePoll() {
   if (code == 200) {
     JsonDocument d;
     if (deserializeJson(d, out) || !d["v"].is<uint32_t>()) { bridgeFail("not a ClaudeStick bridge"); return; }
-    if (!bridgeUp) { bridgeUp = true; dirty = true; }
+    if (!bridgeUp) {
+      bridgeUp = true; dirty = true;
+      if (bridgeEverUp) { notice("bridge", "connected again", C_OK_U, 2500); beep(0); }
+      bridgeEverUp = true;
+    }
     bridgeFails = 0; bridgeErr = "";
     bridgeNextPoll = millis() + (dimmed ? BRIDGE_POLL_DIM_MS : BRIDGE_POLL_ACTIVE_MS);
     if (d["same"] | false) { bridgeSynced = true; return; }
@@ -306,7 +317,7 @@ static void bridgePoll() {
 static void bridgeTick() {
   if (!bridgeConfigured() || !setupDone) return;
   if (WiFi.status() != WL_CONNECTED) {
-    if (bridgeUp) { bridgeUp = false; bridgeDrop(); }
+    if (bridgeUp) { bridgeUp = false; bridgeDrop(); bridgeLost("Wi-Fi dropped"); }
     bridgeTls.stop(); bridgePlain.stop();   // the connection died with the Wi-Fi: give its memory back
     bridgeNextPoll = 0;
     return;

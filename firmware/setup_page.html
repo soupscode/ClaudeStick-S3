@@ -27,8 +27,10 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <label>sound volume</label><input type=range id=vol min=0 max=255>
 <div class=row><input type=checkbox id=tilt><label for=tilt>tilt to scroll long text</label></div>
 <div class=row><input type=checkbox id=flip><label for=flip>flip screen 180&deg; (if it's upside down)</label></div>
+<div class=row><input type=checkbox id=bton><label for=bton>Bluetooth for the Claude desktop app <span class=d>(turn off to save battery when you're away from your computer)</span></label></div>
 <label>text style <span class=d>(the Stick previews it live)</span></label><select id=font onchange=preview()><option value=1>code: slashed zero, cleaner punctuation</option><option value=0>classic</option></select>
-<label>remote mode</label><select id=remote><option value=auto>auto: follows where you last answered (recommended)</option><option value=on>always on</option><option value=off>always off</option></select>
+<label>remote mode</label><select id=remote><option value=auto>auto: follows where you last answered (best at a desk)</option><option value=on>always on (best away from your desk)</option><option value=off>always off</option></select>
+<div class=d>Always on: prompts wait for the Stick while it is connected, and go back to the terminal when it isn't.</div>
 <button onclick=save()>save</button><span id=smsg class=d></span></div>
 
 <div class="c hide" id=nets><div class=t>wi-fi networks</div>
@@ -46,12 +48,14 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 
 <div class="c hide" id=done><div class=t>hook it up to Claude Code</div>
 <div class=d>Run on each machine where you use <b>claude</b> (needs python3):</div><pre id=cmd></pre>
-<div class=d>Windows PowerShell:</div><pre id=cmdw></pre>
+<div class=d id=cmdwl>Windows PowerShell:</div><pre id=cmdw></pre>
 <div class=t style="margin-top:14px">phone remote</div><div class=d>Bookmark on your phone (contains your token):</div><pre id=phone></pre>
 <div class=d id=btline>Desktop app: Help &rarr; Troubleshooting &rarr; Enable Developer Mode &rarr; Developer &rarr; Open Hardware Buddy &rarr; pick <b id=bt></b>.</div>
 <div class=hide id=sc><div class=t style="margin-top:14px">your Stick</div><div class=d>Settings page &rarr; remote access (bridge):</div><pre id=stickcfg></pre></div></div>
 
 <div class="hide" id=settings>
+<div class="c hide" id=rmcard><div class=t>remote mode</div><div class=d>Away from your desk with the Stick? Choose <b>always on</b>: prompts wait for the Stick (or phone) while it is connected, and go back to the terminal as soon as it isn't.</div>
+<select id=rmode><option value=on>always on while a Stick or phone is connected (best away from your desk)</option><option value=auto>auto: follows where you last answered (best at a desk)</option><option value=off>always off</option></select></div>
 <div class="c hide" id=pubcard><div class=t>public address</div><div class=d>How your phone and the Stick reach this bridge from outside: your reverse proxy's address. Used for the phone link and the buttons in ntfy alerts.</div>
 <label>address</label><input id=pubu placeholder="https://stick.example.com" autocomplete=off></div>
 
@@ -148,15 +152,15 @@ async function saveTime(quiet){const i=+$('tz').value,z=Z[i];const body={tz:z?z[
 try{const r=await api('/setup/time',body);I.tz=r.tz;I.tz_name=r.tz_name;I.clock24=r.clock24;if(!quiet)$('tmsg').innerHTML=' <span class=ok>saved'+(r.clock?' · the Stick shows '+r.clock:'')+'</span>'}catch(e){if(!quiet)$('tmsg').innerHTML=' <span class=bad>could not save</span>'}}
 async function load(){try{I=await api('/setup/info')}catch(e){$('hello').textContent='setup is finished. open this page with ?t=<token> to change settings.';return}
 if(!T&&I.token&&I.done)T=I.token;
-if(I.bridge){$('hello').textContent='bridge · v'+I.fw;['wifi','time','me','nets','brcard','fwcard'].forEach(i=>$(i).classList.add('hide'));$('pubcard').classList.remove('hide');T=T||I.token;show(I);loadConf();return}
+if(I.bridge){$('hello').textContent='bridge · v'+I.fw;['wifi','time','me','nets','brcard','fwcard'].forEach(i=>$(i).classList.add('hide'));$('pubcard').classList.remove('hide');$('rmcard').classList.remove('hide');T=T||I.token;show(I);loadConf();return}
 $('hello').textContent=(I.done?'settings':'first-time setup')+' · fw '+I.fw;
 $('wifi').classList.toggle('hide',I.wifi.connected&&!I.ap);$('wform').classList.toggle('hide',I.wifi.connected);
 if(I.wifi.connected){$('wmsg').innerHTML='<span class=ok>connected to '+I.wifi.ssid+' as '+I.wifi.ip+'</span>'+(I.ap?'<br>switch your phone back to your home Wi-Fi, then open <b>http://'+I.wifi.ip+':'+I.port+'/setup</b> to finish.':'')}
 $('me').classList.toggle('hide',!I.wifi.connected&&!I.done);$('time').classList.toggle('hide',!I.wifi.connected&&!I.done);
 if(!$('tz').options.length)fillTz();pickTz();if(I.wifi.connected&&!I.tz_name&&!I.tz&&!I.done)saveTime(true);
-$('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('remote').value=I.remote;
+$('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('bton').checked=I.bt_on!==false;$('remote').value=I.remote;
 $('buddy').innerHTML=I.buddies.map((b,i)=>`<option value=${i}>${b}</option>`).join('');$('buddy').value=I.buddy;
-$('nets').classList.toggle('hide',!I.done);$('brcard').classList.toggle('hide',!I.done);if(I.done){drawNets();brFill()}
+const online=I.wifi.connected||I.done;$('nets').classList.toggle('hide',!online);$('brcard').classList.toggle('hide',!online);if(online){drawNets();brFill()}
 if(I.done){T=T||I.token;show(I);loadConf()}if(I.ap&&!I.wifi.connected)scan()}
 function drawNets(){$('netlist').innerHTML=(I.wifi.saved||[]).map((s,i)=>`<div class=row style="justify-content:space-between"><span>${esc(s)}${i==0?' <span class=d>(first choice)</span>':''}</span><button class=s data-s="${esc(s)}" onclick="forgetNet(this.dataset.s)">forget</button></div>`).join('')||'<div class=d>none yet</div>'}
 async function addNet(){const s=$('nn').value.trim();if(!s){$('wnmsg').innerHTML=' <span class=bad>type the network name</span>';return}
@@ -171,10 +175,11 @@ async function scan(){$('ssid').innerHTML='<option>scanning…</option>';try{con
 async function joinWifi(){const s=$('ssid2').value||$('ssid').value;$('wmsg').textContent='connecting to '+s+'…';await api('/setup/wifi',{ssid:s,pass:$('pw').value});
 for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,1000));try{I=await api('/setup/info');if(I.wifi.connected)return load()}catch(e){}}$('wmsg').innerHTML='<span class=bad>could not connect. check the password (2.4 GHz only).</span>'}
 function preview(){api('/setup/preview',{buddy:+$('buddy').value,font:+$('font').value})}
-async function save(){await saveTime(true);const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,font:+$('font').value,remote:$('remote').value});
-$('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to apply the new name':'')+'</span>';T=r.token;show(r);loadConf()}
+async function save(){await saveTime(true);const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,bt:$('bton').checked,font:+$('font').value,remote:$('remote').value});
+$('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to apply the change':'')+'</span>';T=r.token;show(r);loadConf()}
 function show(r){const h=r.ip||I.wifi.ip,p=r.port||I.port,t=r.token||T;$('done').classList.remove('hide');
-$('cmd').textContent=`curl -s http://${h}:${p}/install.py | python3 - --host ${h} --port ${p} --token ${t}`;
+const viaBridge=!I.bridge&&I.link&&I.link.set;$('cmdw').classList.toggle('hide',viaBridge);$('cmdwl').classList.toggle('hide',viaBridge);
+$('cmd').textContent=viaBridge?'Your machines connect through your bridge. Run the install command shown on the bridge\'s own setup page (http://<bridge>:7890/setup).':`curl -s http://${h}:${p}/install.py | python3 - --host ${h} --port ${p} --token ${t}`;
 $('cmdw').textContent=`irm http://${h}:${p}/install.py -OutFile cs_install.py; python cs_install.py --host ${h} --port ${p} --token ${t}`;
 $('phone').textContent=(r.public_url||`http://${h}:${p}`)+`/?t=${t}`;
 if(I.bridge){$('btline').classList.add('hide');$('sc').classList.remove('hide');$('stickcfg').textContent=`address  ${r.public_url||'(set the public address below)'}\ntoken    ${t}`}else $('bt').textContent=r.bt||I.bt}
@@ -182,11 +187,11 @@ async function loadConf(){try{C=await api('/config')}catch(e){return}$('settings
 $('macros').value=(C.macros||[]).map(m=>m.label+' | '+m.text).join('\n');
 $('pw1').value=C.permission_wait_s;$('pw2').value=C.remote_permission_wait_s;$('sm').value=C.stop_menu;$('sw').value=C.stop_wait_s;$('qd').checked=C.questions_on_device;
 $('stt').value=C.stt_url||'';$('sttm').value=C.stt_model||'';$('sttl').value=C.stt_language||'';$('nu').value=C.ntfy_url||'';$('uu').value=C.update_url||'';
-$('sttk').placeholder=(C.stt_key||C.stt_key_set)?'(set) leave blank to keep':'none';$('nt').placeholder=(C.ntfy_token||C.ntfy_token_set)?'(set) leave blank to keep':'none';$('fwv').textContent='installed: '+I.fw;$('pubu').value=C.public_url||''}
+$('sttk').placeholder=(C.stt_key||C.stt_key_set)?'(set) leave blank to keep':'none';$('nt').placeholder=(C.ntfy_token||C.ntfy_token_set)?'(set) leave blank to keep':'none';$('fwv').textContent='installed: '+I.fw;$('pubu').value=C.public_url||'';$('rmode').value=C.remote||'on'}
 async function saveConf(){const m=$('macros').value.split('\n').map(l=>l.split('|')).filter(p=>p.length>1&&p[0].trim()).slice(0,10).map(p=>({label:p[0].trim().slice(0,28),text:p.slice(1).join('|').trim()}));
 const b={macros:m,permission_wait_s:+$('pw1').value,remote_permission_wait_s:+$('pw2').value,stop_menu:$('sm').value,stop_wait_s:+$('sw').value,questions_on_device:$('qd').checked,
 stt_url:$('stt').value.trim(),stt_model:$('sttm').value.trim()||'whisper-1',stt_language:$('sttl').value.trim(),ntfy_url:$('nu').value.trim()};
-if(I.bridge)b.public_url=$('pubu').value.trim();else b.update_url=$('uu').value.trim();
+if(I.bridge){b.public_url=$('pubu').value.trim();b.remote=$('rmode').value}else b.update_url=$('uu').value.trim();
 if($('sttk').value)b.stt_key=$('sttk').value;if($('nt').value)b.ntfy_token=$('nt').value;
 try{C=await api('/config',b);$('cmsg').innerHTML=' <span class=ok>saved · hooks pick it up within a minute</span>'}catch(e){$('cmsg').innerHTML=' <span class=bad>'+e.message+'</span>'}}
 async function ntest(){const u=$('nu').value.trim();if(!u)return;const h={Title:'ClaudeStick test',Tags:'robot'};const k=$('nt').value;if(k)h.Authorization='Bearer '+k;

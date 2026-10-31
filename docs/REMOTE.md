@@ -1,6 +1,6 @@
-# Using the Stick away from home
+# Remote access: the bridge and your hotspot
 
-You start a Claude Code session at home, go to work, and want to approve, answer and steer it from the Stick on your work (or phone-hotspot) network. Your home network isn't reachable from there, so the Stick can't be talked to directly. A small program, the **bridge**, runs at home and relays:
+This is how ClaudeStick is meant to be used. Your Claude Code sessions run at home (or on a server); you are out with the Stick on your phone's hotspot, approving, answering and steering them. Your home network isn't reachable from there, so a small program, the **bridge**, runs at home and relays:
 
 ```
  home                                                              away
@@ -9,7 +9,7 @@ You start a Claude Code session at home, go to work, and want to approve, answer
                          approvals and cards
 ```
 
-The hooks talk to the bridge exactly like they talk to a Stick. The Stick (or the phone page) polls the bridge every second or two, shows what is waiting, and sends your answers back. At home it works the same way, so nothing changes when you leave.
+The hooks talk to the bridge exactly like they talk to a Stick. The Stick (or the phone page) polls the bridge every second or two, shows what is waiting, and sends your answers back. At home it works the same way, so nothing changes when you leave. Only ever at your desk? You don't need any of this: see [How to use](HOW_TO_USE.md) for direct mode.
 
 > **Status:** the bridge and its protocol are covered by automated tests (including the real hook running against it). The Stick-side client is tested in the firmware logic harness but has **not been run on a StickS3 yet**; see [Known limits](#known-limits).
 
@@ -78,10 +78,12 @@ No proxy at all? `--tls-cert fullchain.pem --tls-key privkey.pem` serves HTTPS d
 
 ## 4. Set up the Stick
 
-Open the Stick's settings page (`http://<stick-ip>:7880/setup?t=<token>`) while you're home:
+The Stick's setup page (the one the flasher opens, or `http://<stick-ip>:7880/setup?t=<token>` later; do this at home) asks for everything:
 
 - **wi-fi networks:** add your **phone's hotspot** (name and password). The Stick keeps up to four networks and joins the strongest one it can see, so it follows you from home to the hotspot. The Stick is 2.4 GHz only: make sure the hotspot offers 2.4 GHz (many phones have a "maximize compatibility" or band setting for this). WPA2 personal is what it speaks.
 - **remote access (bridge):** the bridge's public address (`https://stick.example.com`) and its token, then **connect**. The page tells you if the address, the token or the connection is wrong.
+- **remote mode:** *always on* is right for a device you carry (see *What to expect*).
+- **Bluetooth:** switch it off if you won't be near your computer; it saves battery.
 
 A small cloud in the status bar shows the link: green connected, red can't reach it, grey still connecting. The info screen says why.
 
@@ -89,9 +91,9 @@ Your phone can use the bridge too: the setup page shows the phone link (`https:/
 
 ## What to expect
 
-- **Speed.** The Stick checks the bridge every 1.5 s with the screen on and every 4 s when dimmed, so a new approval shows up within a couple of seconds. This keeps the radio busier than direct mode: expect shorter battery life when a bridge is set.
-- **Remote mode.** In *auto*, the bridge decides: it is on while you answer from the Stick or phone and off when you type in the terminal. With **nobody connected** it is off, so prompts wait 20 s for you and then appear in the terminal, as if the Stick weren't there. They never hang for ten minutes on a Stick that's switched off.
-- **Losing the connection.** After two failed checks the Stick drops everything from the bridge (the prompts have timed out at home by then) and retries with a growing delay, up to a minute. When it's back it shows the current state quietly, without chiming for old news.
+- **Speed and battery.** The Stick checks the bridge every 1.5 s with the screen on and every 4 s when dimmed, so a new approval shows up within a couple of seconds. The battery is small (250 mAh): see [Battery](HOW_TO_USE.md#battery) for what to expect, how the Stick measures it, and what helps (a power bank, Bluetooth off).
+- **Remote mode.** The bridge's default is **always on**, which only ever applies while a Stick or phone page is connected: prompts wait up to 10 minutes for you, and Claude is told you're on a small device. Switch the Stick off or leave it out of range and the bridge sees nobody connected, so prompts wait 20 s and then appear in the terminal as if the Stick weren't there; they never hang on a Stick that's switched off. If you keep the Stick on at your desk and want the terminal to take over when you type, choose *auto* (bridge settings page, the Stick's menu or the phone page).
+- **Losing the connection.** After two failed checks the Stick tells you (a notice and a tone, because Claude may be waiting on you), drops everything from the bridge (the prompts have timed out at home by then) and retries with a growing delay, up to a minute. When it's back it says so and shows the current state quietly, without chiming for old news.
 - **Voice.** Push-to-talk sends the recording to the bridge, which forwards it to the speech server in *its* settings (so the Stick never needs to reach it, and the API key stays at home).
 - **Macros and menu.** For a bridge session the menu lists the bridge's macros; the Done card options come from the bridge too.
 - **Clock.** HTTPS needs the date. The Stick gets it over NTP; a hotspot normally allows that. Until then it says *waiting for the clock*.

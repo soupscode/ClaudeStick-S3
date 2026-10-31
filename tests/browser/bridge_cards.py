@@ -96,6 +96,37 @@ with sync_playwright() as p:
     check("turning it off clears it", md.SETUP["bridge"]["url"] == "" and pg.input_value("#bu") == "")
     check("the Stick page still has its own cards", pg.is_visible("#fwcard") and not pg.is_visible("#pubcard"))
 
+    # ------------------------------------------------------------- first-time setup: away-from-home pieces come up right away
+    md.SETUP.update(done=False, connected=True, ssid="home-wifi", nets=[], bt_on=True)
+    md.SETUP["bridge"] = {"url": "", "tok": "", "up": False, "error": ""}
+    pf = b.new_page(viewport={"width": 420, "height": 900}, device_scale_factor=2)
+    pf.on("pageerror", lambda e: errs.append(str(e)))
+    pf.goto(f"http://127.0.0.1:{stick.server_port}/setup")   # no token yet: this is the first-time wizard
+    pf.wait_for_selector("#me:not(.hide)")
+    check("first-time setup: Wi-Fi networks and bridge cards are there once the Stick is online",
+          pf.is_visible("#nets") and pf.is_visible("#brcard") and "first-time" in pf.inner_text("#hello"))
+    pf.fill("#nn", "Phone hotspot")
+    pf.fill("#np", "hotspotpw")
+    pf.click("#nets button:text-is('add')")
+    pf.wait_for_selector("#netlist >> text=Phone hotspot")
+    pf.fill("#bu", "https://stick.example.com")
+    pf.fill("#btk", "goodtoken")
+    pf.click("#brcard button:text-is('connect')")
+    pf.wait_for_selector("#bmsg >> text=connected")
+    check("first-time setup: hotspot and bridge can be set before finishing", md.SETUP["bridge"]["up"] and
+          [n["s"] for n in md.SETUP["nets"]] == ["home-wifi", "Phone hotspot"], (md.SETUP["bridge"], md.SETUP["nets"]))
+    check("remote mode explains 'always on' for being away", "away from your desk" in pf.inner_text("#me"))
+    check("Bluetooth checkbox starts on", pf.is_checked("#bton"))
+    pf.uncheck("#bton")
+    pf.click("#me button:text-is('save')")
+    pf.wait_for_selector("#smsg >> text=saved")
+    check("turning Bluetooth off is saved and the page says the Stick restarts", md.SETUP["bt_on"] is False and "restarting" in pf.inner_text("#smsg"),
+          (md.SETUP["bt_on"], pf.inner_text("#smsg")))
+    check("first-time setup: with a bridge set, the page sends you to the bridge's install command, not the Stick's",
+          "bridge" in pf.inner_text("#cmd") and "curl" not in pf.inner_text("#cmd") and not pf.is_visible("#cmdw"), pf.inner_text("#cmd"))
+    pf.screenshot(path=os.path.join(SHOTS, "bridge_cards_ftue.png"), full_page=True)
+    md.SETUP.update(done=True, bt_on=True)
+
     # ------------------------------------------------------------- on the bridge
     pb = b.new_page(viewport={"width": 420, "height": 900}, device_scale_factor=2)
     pb.on("pageerror", lambda e: errs.append(str(e)))
@@ -108,6 +139,8 @@ with sync_playwright() as p:
           "--token " + "b" * 32 in pb.inner_text("#cmd") and "/install.py" in pb.inner_text("#cmd"), pb.inner_text("#cmd"))
     check("bridge: no Bluetooth line", not pb.is_visible("#btline"))
     check("bridge: shows what to type into the Stick", pb.is_visible("#sc") and "b" * 32 in pb.inner_text("#stickcfg"))
+    check("bridge: remote mode card, 'always on' by default", pb.is_visible("#rmcard") and pb.input_value("#rmode") == "on")
+    pb.select_option("#rmode", "auto")
     pb.fill("#pubu", "https://stick.example.com")
     pb.fill("#macros", "Go | Go ahead.\nStop | Stop here.")
     pb.fill("#stt", "http://whisper.lan:8000/v1/audio/transcriptions")
@@ -118,6 +151,7 @@ with sync_playwright() as p:
     check("bridge: settings saved (public address, macros, voice, key)", c["public_url"] == "https://stick.example.com" and
           [m["label"] for m in c["macros"]] == ["Go", "Stop"] and c["stt_key"] == "sk-secret", c)
     check("bridge: no firmware update source sent", "update_url" not in c)
+    check("bridge: remote mode saved", c["remote"] == "auto", c["remote"])
     pb.reload()
     pb.wait_for_selector("#settings:not(.hide)")
     check("bridge: secrets are never sent back to the page", "sk-secret" not in pb.content() and pb.get_attribute("#sttk", "placeholder").startswith("(set)"),

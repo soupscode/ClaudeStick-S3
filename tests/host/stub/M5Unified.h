@@ -33,8 +33,9 @@ struct M5GFX : LGFXBase {};
 struct M5Canvas : LGFXBase { M5Canvas(LGFXBase*){} void* createSprite(int ww,int hh){ w=ww;h=hh; fb=(uint16_t*)calloc(ww*hh,2); return fb; }
   void setColorDepth(int){} void setPsram(bool){} void pushSprite(int,int); };
 struct Button_Class { bool c=false,hd=false; bool isPressed(){return false;} bool wasClicked(){return c;} bool wasHold(){return hd;} void setHoldThresh(uint16_t){} };
+extern int BATT_PCT; extern bool BATT_CHARGING;   // tests set these
 namespace m5 { struct Power_Class { enum is_charging_t { is_discharging=0, is_charging=1, charge_unknown=2 };
- int32_t getBatteryLevel(){return 87;} int16_t getBatteryVoltage(){return 4012;} is_charging_t isCharging(){return is_discharging;} }; }
+ int32_t getBatteryLevel(){return BATT_PCT;} int16_t getBatteryVoltage(){return 4012;} is_charging_t isCharging(){return BATT_CHARGING ? is_charging : is_discharging;} }; }
 extern int TONES;
 struct Speaker_Class { void end(); bool begin(){return true;} bool tone(float, uint32_t){ TONES++; return true; } void setVolume(uint8_t){} };
 struct Mic_Class { bool begin(); void end(); bool record(int16_t*, size_t, uint32_t); size_t isRecording(); };

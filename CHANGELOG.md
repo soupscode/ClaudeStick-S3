@@ -2,6 +2,13 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.1
+- Built for being away from your desk: setup asks for your hotspot and bridge right away
+- Remote mode "always on" is the bridge's default, only while your Stick is connected
+- The Stick tells you when it loses the bridge, and when it's back
+- Battery: drain meter on the info screen, Bluetooth can be switched off, experimental radio sleep
+- Bridge settings page has the remote mode setting
+
 ## 0.9.0
 - Away from home: follow your home Claude sessions from any Wi-Fi through a bridge (docs/REMOTE.md)
 - Remembers up to four Wi-Fi networks (home, a phone hotspot) and joins the strongest

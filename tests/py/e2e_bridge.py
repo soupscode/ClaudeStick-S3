@@ -39,6 +39,8 @@ data = tempfile.mkdtemp()
 store = br.Store(data)
 store.ident["token"] = TOKEN
 store.ensure_identity()
+check("the bridge defaults to remote 'on' (it is only ever on while a Stick or phone is connected)", store.config["remote"] == "on")
+store.config["remote"] = "auto"   # the tests below exercise the auto rule
 clock = Clock()
 core = br.Core(store, mono=clock, wall=lambda: 1_800_000_000 + clock.t)
 guard = br.AuthGuard(TOKEN, mono=clock)

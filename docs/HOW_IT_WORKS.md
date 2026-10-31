@@ -77,7 +77,7 @@ The clock is set from NTP when Wi-Fi is up, with the hook, the desktop app or th
 
 ## Power
 
-Screen brightness drops after 1 min and the screen turns off after 3 min; the CPU runs at 160 MHz (80 MHz while dimmed). Wi-Fi and Bluetooth stay on so hooks and the desktop can still reach the Stick. If the heap fragments badly after days of uptime, the Stick restarts itself while idle.
+Screen brightness drops after 1 min and the screen turns off after 3 min; the CPU runs at 160 MHz (80 MHz while dimmed). Wi-Fi stays on so hooks and the bridge can reach the Stick; Bluetooth (for the desktop app) can be switched off in settings, which saves power and frees RAM for TLS. A drain meter (`drainTick`) tracks the battery level since it was unplugged and feeds the info screen's `batt` row and the serial `bat` command; `sleep max` is an experimental switch to `WIFI_PS_MAX_MODEM`, off by default because it hasn't been tried on hardware. If the heap fragments badly after days of uptime, the Stick restarts itself while idle.
 
 ## Repo map
 

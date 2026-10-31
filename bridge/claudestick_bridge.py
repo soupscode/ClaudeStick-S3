@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it
@@ -54,7 +54,7 @@ DEFAULT_MACROS = [
 ]
 DEFAULT_CONFIG = {
     "permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s": 600, "stop_menu": "remote",
-    "questions_on_device": True, "remote": "auto", "public_url": "", "ntfy_url": "", "ntfy_token": "",
+    "questions_on_device": True, "remote": "on", "public_url": "", "ntfy_url": "", "ntfy_token": "",
     "stt_url": "", "stt_model": "whisper-1", "stt_language": "", "stt_key": "", "macros": DEFAULT_MACROS,
 }
 SECRETS = ("ntfy_token", "stt_key")

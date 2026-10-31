@@ -201,7 +201,14 @@ int main() {
   TONES = 0;
   script(200, stateV(6)); pollNow();
   check("reconnected", bridgeUp && bridgeFails == 0 && topApproval());
-  check("reconnecting shows what's there without chiming for old news", TONES == 0, std::to_string(TONES));
+  check("reconnecting says so with one click, and doesn't chime for old news", TONES == 1 && noticeText == "connected again", std::to_string(TONES) + " " + noticeText.c_str());
+
+  // ---- losing the link when nobody is watching the screen
+  script(200, stateV(7)); pollNow();
+  TONES = 0; noticeUntil = 0; script(-1, ""); pollNow();
+  check("one miss is quiet", TONES == 0 && noticeUntil == 0);
+  script(-1, ""); pollNow();
+  check("two misses: a notice and a tone, because Claude may be waiting on you", noticeTitle == "bridge" && noticeText.startsWith("lost:") && TONES > 0, noticeText.c_str());
 
   // ---- error replies
   script(401, R"({"error":"bad token"})"); pollNow();
@@ -222,8 +229,10 @@ int main() {
   HEAP_FREE = 20000; TLS_UP = false; HTTP_LOG.clear(); pollNow();
   check("no TLS session without enough free memory", HTTP_LOG.empty() && bridgeErr == "low memory", bridgeErr.c_str());
   HEAP_FREE = 150000;
+  script(200, stateV(8)); pollNow(); noticeUntil = 0; TONES = 0;
   WiFi.st = WL_IDLE_STATUS; HTTP_LOG.clear(); TLS_UP = true; int stops0 = TLS_STOPS;
   bridgeTick();
+  check("Wi-Fi dropping says so", noticeText == "lost: Wi-Fi dropped" && TONES > 0, noticeText.c_str());
   check("Wi-Fi down: no requests, bridge items dropped, connection released", HTTP_LOG.empty() && !bridgeUp && !topApproval() && TLS_STOPS > stops0);
   WiFi.st = WL_CONNECTED;
   bridgeSave("http://192.168.1.20:7890", "tok123"); at(1);
@@ -294,7 +303,7 @@ int main() {
       check("real bridge: Done card with the bridge's macros", rs && rs->kind == "done" && rs->session == "real-2" && rs->last == "All tests pass" &&
                                                               rs->nMacros == 6 && rs->macros[5].label == "Commit");
       check("real bridge: macro labels", nBridgeMacro == 6 && bridgeMacro[0] == "Continue");
-      check("real bridge: first look is quiet", TONES == 0, std::to_string(TONES));
+      check("real bridge: first look is quiet (just the reconnect click)", TONES <= 1, std::to_string(TONES));
       HTTP_LOG.clear(); script(200, R"({"ok":true})");
       decide(ra, D_ALWAYS);
       check("real bridge: the answer names the id the bridge gave", has(lastReq(), "\"id\":1000000") && has(lastReq(), "\"action\":\"always\""), lastReq());

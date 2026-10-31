@@ -51,7 +51,7 @@ CONF = {"permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s":
 S = {"sessions": {}, "approvals": {}, "stops": {}, "next": 1, "log": [], "pinned": "",
      "last_stick": 0.0, "last_kbd": 0.0, "ota_bytes": 0}
 SETUP = {"nets": [], "bridge": {"url": "", "tok": "", "up": False, "error": ""}, "done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
-         "buddy": 0, "volume": 120, "tilt": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
+         "buddy": 0, "volume": 120, "tilt": True, "bt_on": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
 DEVICE_ID, MDNS_HOST = "a1b2c3d4e5f6", "claudestick-e5f6.local"
 
 
@@ -203,7 +203,7 @@ class H(BaseHTTPRequestHandler):
                                    "link": {"url": SETUP["bridge"]["url"], "set": bool(SETUP["bridge"]["url"]),
                                               "up": SETUP["bridge"]["up"], "error": SETUP["bridge"]["error"]},
                                    "name": SETUP["name"], "bt": SETUP["name"], "buddy": SETUP["buddy"],
-                                   "volume": SETUP["volume"], "tilt": SETUP["tilt"], "remote": CONF["remote"],
+                                   "volume": SETUP["volume"], "tilt": SETUP["tilt"], "bt_on": SETUP["bt_on"], "remote": CONF["remote"],
                                    "buddies": BUDDIES, "token": TOKEN, "ip": SETUP["ip"]})
             if p == "/setup/scan":
                 return self.reply([{"ssid": "home-wifi", "rssi": -48, "secure": True},
@@ -331,6 +331,8 @@ class H(BaseHTTPRequestHandler):
                              tilt=bool(b.get("tilt")), done=True)
                 if isinstance(b.get("font"), int):
                     SETUP["font"] = b["font"]
+                if isinstance(b.get("bt"), bool) and b["bt"] != SETUP["bt_on"]:
+                    SETUP["bt_on"], restart = b["bt"], True   # Bluetooth starts at boot
                 if isinstance(b.get("remote"), str):
                     CONF["remote"] = b["remote"]
                 return self.reply({"ok": True, "restart": restart, "token": TOKEN, "bt": SETUP["name"],

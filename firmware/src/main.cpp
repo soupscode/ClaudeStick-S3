@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.0";
+static const char*    FW_VERSION   = "0.9.1";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -158,6 +158,8 @@ static uint32_t    restartAt = 0, doneAt = 0;
 static String      apName, devId;
 static bool        flipped = false;    // screen rotated 180 degrees
 static bool        safeMode = false;   // Bluetooth off (hold B at power-on, or automatic after a crash loop)
+static bool        btPref = true;      // Bluetooth for the Claude desktop app; off saves battery when you're away from your computer
+static bool        btOff() { return safeMode || !btPref; }
 static String      resetWhy;
 
 // Settings shared with every machine's hook (GET/POST /config). Stored on the Stick
@@ -317,6 +319,38 @@ static const char* DEFAULT_MACROS = R"JSON([
 
 static const char* remoteName(uint8_t r) { return r == 0 ? "off" : r == 1 ? "on" : "auto"; }
 static bool bridgeUp = false, bridgeRemote = false;   // set by bridge.inc
+static uint8_t radioSleep = 0;   // 0 = standard modem sleep, 1 = maximum (experimental: see the "sleep" serial command)
+static void applyRadioSleep() { WiFi.setSleep(radioSleep ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM); }
+
+// Battery: how fast it drains while unplugged, measured from the moment it was unplugged (or boot).
+static struct { uint32_t t0 = 0; int pct0 = -1; } drain;
+
+static void drainTick() {
+  static uint32_t last = 0;
+  if (millis() - last < 30000) return;
+  last = millis();
+  int pct = M5.Power.getBatteryLevel();
+  if ((int)M5.Power.isCharging() == 1 || pct < 0) { drain.pct0 = -1; return; }   // plugged in: start over when unplugged
+  if (drain.pct0 < 0 || pct > drain.pct0) { drain.pct0 = pct; drain.t0 = millis(); }
+}
+
+// Percent per hour once there are 10 minutes and at least 2 points to go on, else -1.
+static float drainPerHour() {
+  int pct = M5.Power.getBatteryLevel();
+  uint32_t ms = millis() - drain.t0;
+  if (drain.pct0 < 0 || pct < 0 || ms < 10UL * 60 * 1000 || drain.pct0 - pct < 2) return -1;
+  return (drain.pct0 - pct) * 3600000.0f / ms;
+}
+
+static String batteryLine() {
+  int pct = M5.Power.getBatteryLevel();
+  String s = String(pct) + "% " + String(M5.Power.getBatteryVoltage() / 1000.0f, 2) + "V";
+  if ((int)M5.Power.isCharging() == 1) return s + " charging";
+  float r = drainPerHour();
+  if (r > 0) { float h = pct / r; s += "  " + String(r, 1) + "%/h ~" + String(h, h < 10 ? 1 : 0) + "h"; }
+  else s += "  measuring";
+  return s;
+}
 
 // Effective remote mode. In auto it follows where you last answered: the Stick or
 // phone (remote) versus typing in the terminal (desk).
@@ -475,7 +509,7 @@ static void handleBleLine(const String& line) {
     } else if (cmd == "owner") {
       ownerName = doc["name"] | ""; bleAck("owner");
     } else if (cmd == "unpair") {
-      if (!safeMode) bleClearBonds();
+      if (!btOff()) bleClearBonds();
       bleAck("unpair");
     }
     // char_begin and other folder-push commands are deliberately not acked:
@@ -1268,7 +1302,7 @@ static void textCommand(String line) {
     Serial.printf("ClaudeStick %s\nname=%s host=%s.local ip=%s port=%u\ntoken=%s\nwifi=%s (%s)\nble=%s setup=%s\n",
       FW_VERSION, devName.c_str(), mdnsHost.c_str(), WiFi.localIP().toString().c_str(), HTTP_PORT,
       token.c_str(), ssid.c_str(), WiFi.status() == WL_CONNECTED ? "connected" : "down",
-      safeMode ? "off (safe mode)" : bleConnected() ? "connected" : "idle", setupDone ? "done" : "pending");
+      safeMode ? "off (safe mode)" : !btPref ? "off (setting)" : bleConnected() ? "connected" : "idle", setupDone ? "done" : "pending");
     Serial.printf("last reset: %s  heap %u  psram %u\n", resetWhy.c_str(), ESP.getFreeHeap(), ESP.getFreePsram());
   } else if (line.startsWith("tilt ")) {
     String m = line.substring(5);
@@ -1293,13 +1327,21 @@ static void textCommand(String line) {
   } else if (line == "setup") {
     setupDone = false; prefs.putBool("setup", false);
     Serial.println("ok, first-time setup re-opened");
+  } else if (line == "bat") {
+    float r = drainPerHour();
+    Serial.printf("batt %d%% %.0f mV charging=%d drain=%s\n", M5.Power.getBatteryLevel(), (float)M5.Power.getBatteryVoltage(),
+                  (int)M5.Power.isCharging() == 1, r > 0 ? (String(r, 1) + "%/h").c_str() : "measuring");
+  } else if (line.startsWith("sleep ")) {
+    String m = line.substring(6); m.trim();
+    if (m != "max" && m != "min") Serial.println("sleep max|min (experimental: max lets the radio sleep longer between beacons)");
+    else { radioSleep = m == "max"; prefs.putUChar("wps", radioSleep); applyRadioSleep(); Serial.printf("ok radio sleep %s\n", m.c_str()); }
   } else if (line == "reboot") {
     ESP.restart();
   } else if (line == "forget") {
-    forgetAllNets(); prefs.putBool("setup", false); if (!safeMode) bleClearBonds();
+    forgetAllNets(); prefs.putBool("setup", false); if (!btOff()) bleClearBonds();
     Serial.println("ok forgotten, rebooting"); delay(200); ESP.restart();
   } else {
-    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | tz <rule> | clock 12|24 | font 0|1 | info | setup | reboot | forget");
+    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | tz <rule> | clock 12|24 | font 0|1 | bat | sleep max|min | info | setup | reboot | forget");
   }
   dirty = true;
 }
@@ -1410,6 +1452,7 @@ static void hSetupInfo() {
   JsonObject br = out["link"].to<JsonObject>();   // the bridge the Stick follows; its token is never sent back
   br["url"] = bridgeUrl; br["set"] = bridgeConfigured(); br["up"] = bridgeUp; br["error"] = bridgeUp ? "" : bridgeErr;
   out["name"] = devName; out["bt"] = devName; out["buddy"] = buddySpeciesIdx();
+  out["bt_on"] = btPref;
   out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
   out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24; out["clock"] = clockStr(); out["font"] = textStyle;
   JsonArray b = out["buddies"].to<JsonArray>();
@@ -1485,7 +1528,7 @@ static void hSetupBridge() {
   int code = WiFi.status() == WL_CONNECTED ? bridgeRequest("GET", "/state?n=1&v=0", "", body) : -3;
   JsonDocument d;
   bool good = code == 200 && !deserializeJson(d, body) && d["v"].is<uint32_t>();
-  if (good) { bridgeUp = true; bridgeFails = 0; bridgeApply(d); bridgeV = d["v"] | 0UL; bridgeNextPoll = millis() + BRIDGE_POLL_ACTIVE_MS; }
+  if (good) { bridgeUp = true; bridgeEverUp = true; bridgeFails = 0; bridgeApply(d); bridgeV = d["v"] | 0UL; bridgeNextPoll = millis() + BRIDGE_POLL_ACTIVE_MS; }
   out["ok"] = good; out["set"] = true;
   out["error"] = good ? "" : code == 401 ? "the bridge rejected that token" : code == 404 ? "that address answered, but it isn't a ClaudeStick bridge" :
                  code > 0 ? "the bridge answered " + String(code) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
@@ -1539,9 +1582,11 @@ static void hSetupSave() {
   tiltMode = (in["tilt"] | true) ? 1 : 0; prefs.putChar("tilt", tiltMode);
   if (in["font"].is<int>()) { textStyle = in["font"].as<int>() ? 1 : 0; prefs.putUChar("font", textStyle); }
   if (in["flip"].is<bool>()) { flipped = in["flip"]; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); }
+  if (in["bt"].is<bool>() && in["bt"].as<bool>() != btPref) { btPref = in["bt"]; prefs.putBool("bt", btPref); restart = true; }   // Bluetooth starts at boot
   if (in["remote"].is<const char*>()) { String rm = in["remote"].as<const char*>(); conf.remote = rm == "off" ? 0 : rm == "on" ? 1 : 2; }
   else if (in["remote"].is<bool>()) conf.remote = in["remote"].as<bool>() ? 1 : 2;
   saveConfig(); updateRemote();
+  if (bridgeUp && in["remote"].is<const char*>()) bridgeSetRemote(conf.remote);   // the bridge owns remote mode while connected
   if (!setupDone) { setupDone = true; doneAt = millis(); prefs.putBool("setup", true); }
   JsonDocument out;
   out["ok"] = true; out["restart"] = restart; out["token"] = token; out["bt"] = devName;
@@ -1725,7 +1770,7 @@ static int statusBar(bool paint) {
   { int px = put(18); if (paint) iconBattery(px, 0, pct, chg); }
   if (chg) { put(3); int px = put(5); if (paint) { static const uint8_t bolt[5] = { 0x06, 0x0C, 0x0E, 0x06, 0x0C }; iconBitmap(px, 1, bolt, 5, 5, C_YEL); } }
   put(4);
-  if (!safeMode) { int px = put(5); if (paint) iconBluetooth(px, 0, bleConnected()); put(4); }
+  if (!btOff()) { int px = put(5); if (paint) iconBluetooth(px, 0, bleConnected()); put(4); }
   { int px = put(11); if (paint) iconWifi(px, 0, wifiBars(), wifiRssiAvg()); }
   if (bridgeConfigured()) { put(4); int px = put(7); if (paint) iconBridge(px, 2, bridgeUp ? C_OK : bridgeFails ? C_BAD : C_DIM); }
   return W - 5 - x;
@@ -2020,7 +2065,7 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
@@ -2039,6 +2084,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
   add(MI_TEST, 0, "hardware test");
   add(MI_HELP, 0, "button help");
   add(MI_INFO, 0, "info");
+  add(MI_BT, 0, String("bluetooth: ") + (btPref ? "on" : "off") + " (restarts)");
   add(MI_TOKEN, 0, "new token (hold A)");
   add(MI_SETUP, 0, "re-run setup");
   add(MI_BACK, 0, "back");
@@ -2087,7 +2133,7 @@ static void drawTest() {
        ((int)M5.Power.isCharging() == 1 ? " chg" : ""), C_FG);
   line(WiFi.status() == WL_CONNECTED ? "wifi " + String(WiFi.RSSI()) + " dBm" : String("wifi down"),
        WiFi.status() == WL_CONNECTED ? C_OK : C_BAD);
-  line(String("bt ") + (safeMode ? "off (safe mode)" : bleConnected() ? "connected" : "advertising"), safeMode ? C_YEL : C_FG);
+  line(String("bt ") + (safeMode ? "off (safe mode)" : !btPref ? "off (setting)" : bleConnected() ? "connected" : "advertising"), safeMode ? C_YEL : C_FG);
   line("heap " + String(ESP.getFreeHeap() / 1024) + "K psram " + String(ESP.getFreePsram() / 1024) + "K", C_FG);
   line("last reset: " + resetWhy, C_DIM);
   line("fw " + String(FW_VERSION) + (flipped ? " (flipped)" : ""), C_DIM);
@@ -2210,7 +2256,7 @@ static void drawInfo() {
   kv("sig", up ? String((int)wifiRssiAvg()) + " dBm  " + String(wifiBars()) + "/4" : String("not connected"), up ? C_FG : C_BAD);
   kv("ip", WiFi.localIP().toString() + ":" + String(HTTP_PORT));
   if (bridgeConfigured()) kv("link", bridgeUp ? String("connected") : "offline: " + (bridgeErr.length() ? bridgeErr : String("connecting")), bridgeUp ? C_OK : C_BAD);
-  kv("host", mdnsHost);
+  kv("batt", batteryLine(), (int)M5.Power.isCharging() == 1 ? C_OK : C_FG);
   kv("key", token, C_CLAUDE);
   String tk = fmtTok(tokensToday()) + " today";
   if (desk.lastBeat) tk += "  desk " + fmtTok(desk.tokensToday);
@@ -2595,6 +2641,8 @@ static void buttons() {
                       if (upd.available) upd.remindAt = 0; else { notice("updates", "checking...", C_DIM, 15000); draw(); checkForUpdate(true); }
                       break;
       case MI_INFO:   screen = SCR_INFO; menuIdx = 0; break;
+      case MI_BT:     btPref = !btPref; prefs.putBool("bt", btPref); restartAt = millis() + 1500;
+                      notice("bluetooth", btPref ? "turning on: restarting" : "turning off: restarting", C_YEL_U, 3000); break;
       case MI_TOKEN:  holdHintUntil = millis() + 2000; beep(3); break;              // needs a hold
       case MI_SETUP:  setupDone = false; prefs.putBool("setup", false); screen = SCR_HOME; menuIdx = 0; break;
       default:        screen = SCR_HOME; menuIdx = 0; break;
@@ -2697,6 +2745,8 @@ void setup() {
   skipVersion = prefs.getString("skipver", "");
   setupDone = prefs.getBool("setup", false);
   volume = prefs.getUChar("vol", 120);
+  btPref = prefs.getBool("bt", true);
+  radioSleep = prefs.getUChar("wps", 0);
   M5.Speaker.setVolume(volume);
   M5.update();
   if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {   // hold A+B while powering on: forget Wi-Fi, redo setup
@@ -2722,11 +2772,11 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(mdnsHost.c_str());
-  WiFi.setSleep(true);     // required for Wi-Fi + BLE coexistence
+  applyRadioSleep();       // modem sleep is required for Wi-Fi + BLE coexistence
   if (nNets) { pickNetAtBoot(); WiFi.begin(ssid.c_str(), pass.c_str()); }
   else if (!setupDone) startAP();
 
-  if (!safeMode) bleInit(devName.c_str());
+  if (!btOff()) bleInit(devName.c_str());
   startHttp();
   bootNotices();
   lastActivity = millis();
@@ -2756,6 +2806,7 @@ void loop() {
   apTick();
   updateTick();
   ntpTick();
+  drainTick();
   memoryWatch();
   bootHealthTick();
   buttons();

@@ -27,7 +27,7 @@ On cards that offer *always allow*, a single A waits 0.35 s to see whether a sec
 
 ## Remote mode
 
-Set it from the menu, the phone page or settings: **auto** (default), **on**, or **off**. Auto follows where you last answered: an answer from the Stick or phone turns it on, typing in the terminal turns it off.
+Set it from the menu, the phone page or settings: **auto**, **on**, or **off**. Auto follows where you last answered: an answer from the Stick or phone turns it on, typing in the terminal turns it off. A Stick used directly starts in *auto*, which suits a desk. Through a [bridge](REMOTE.md) the default is **always on**, which suits carrying it: it only applies while a Stick or phone page is connected, and prompts return to the terminal by themselves when nothing is.
 
 | | Remote **on** (away from the desk) | Remote **off** (at the desk) |
 |---|---|---|
@@ -55,7 +55,7 @@ Open `http://<stick-ip>:7880/?t=<token>` once and add it to your home screen. It
 
 ## Settings
 
-Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Every machine's hook fetches these from the Stick, so you edit them once: macros (`label | instruction`, up to 10), approval waits, the Done menu mode, voice, ntfy, time zone and clock style, text style, volume, tilt, and firmware updates. The menu on the Stick also has the common toggles (remote mode, buddy, text style, 12/24-hour clock, flip screen). The Stick remembers up to four Wi-Fi networks (**settings → wi-fi networks**), for example home and a phone hotspot, and joins the strongest one in range.
+Open `http://<stick-ip>:7880/setup?t=<token>` (the phone page links to it). Every machine's hook fetches these from the Stick, so you edit them once: macros (`label | instruction`, up to 10), approval waits, the Done menu mode, voice, ntfy, time zone and clock style, text style, volume, tilt, and firmware updates. The menu on the Stick also has the common toggles (remote mode, buddy, text style, 12/24-hour clock, flip screen, Bluetooth). The Stick remembers up to four Wi-Fi networks (**settings → wi-fi networks**), for example home and a phone hotspot, and joins the strongest one in range.
 
 ## Away from home
 
@@ -67,4 +67,11 @@ The Stick checks your update source (the flasher site) 90 s after boot and every
 
 ## Battery
 
-The StickS3 has a 250 mAh battery, so treat it as a desk device with a grace period rather than a full-day wearable. **Not measured on hardware yet**; from the chip's power figures and what the firmware does, expect roughly **4-8 hours** on battery with the screen mostly off (the low end if you use it a lot, or with a [bridge](REMOTE.md), which keeps the radio busier), and a full charge from USB-C in about an hour or two. Plugged in, it is fine to leave running all day. What helps: keep the volume modest (M5Stack advises under 75% on battery), let the screen sleep (it dims after 1 minute and turns off after 3), and charge it at your desk. The battery gauge and voltage are in the status bar and **menu → info**; noting the percentage before and after a work session tells you your real figure.
+The StickS3 has a 250 mAh battery. **Not measured on hardware yet**; from the chip's power figures and what the firmware does, expect roughly **4-8 hours** on battery with the screen mostly off, the low end if you use it a lot. For a full day out, carry a small USB-C power bank: the Stick is happy to run and charge at the same time. Your phone's hotspot costs *its* battery too.
+
+What helps:
+
+- **Switch Bluetooth off** (menu → bluetooth, or the setup page) when you're away from your computer; Bluetooth only serves the Claude desktop app. It restarts the Stick, saves a little power and frees memory.
+- Keep the volume modest (M5Stack advises under 75% on battery) and let the screen sleep (it dims after 1 minute and turns off after 3).
+- **Measure it:** **menu → info** has a `batt` row with level, voltage, and, after 10 minutes unplugged, the drain rate in %/h and the hours left at that rate. `bat` in the serial console prints the same.
+- **Experimental:** `sleep max` in the serial console lets the radio sleep longer between beacons, which may stretch battery life but could add delay or drop connections on some access points. It is untested on hardware; compare the `batt` row with and without it, and `sleep min` puts it back.

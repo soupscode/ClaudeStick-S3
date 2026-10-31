@@ -220,12 +220,6 @@ static Session* findSession(const String& id, bool create) {
   return &sessions[i];
 }
 
-static int activeSessionCount() {
-  int n = 0;
-  for (auto& s : sessions) if (s.used) n++;
-  return n;
-}
-
 // Session the actions menu targets: focused one, else most recently active.
 static Session* targetSession() {
   if (focusSession >= 0 && sessions[focusSession].used) return &sessions[focusSession];
@@ -472,7 +466,8 @@ static void handleBleLine(const String& line) {
     } else if (cmd == "owner") {
       ownerName = doc["name"] | ""; bleAck("owner");
     } else if (cmd == "unpair") {
-      if (!safeMode) bleClearBonds(); bleAck("unpair");
+      if (!safeMode) bleClearBonds();
+      bleAck("unpair");
     }
     // char_begin and other folder-push commands are deliberately not acked:
     // the desktop times out and reports that this device doesn't take files.

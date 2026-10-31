@@ -8,6 +8,7 @@ Checks that ota.json, manifest.json and the firmware images agree with each othe
   * the merged image looks like a flash dump (bootloader at 0x0, partition table at 0x8000, app at 0x10000)
     and carries the same app image
   * the version string, and the baked-in update URL (CS_UPDATE_URL env), are inside the app image
+  * if CS_TELEMETRY_URL is set, it is inside the app image too (and the report says so either way)
   * the bridge's VERSION (bridge/claudestick_bridge.py), when present, equals FW_VERSION
   * the telemetry collector's VERSION (telemetry/claudestick_telemetry.py), when present, equals FW_VERSION
   * the update notes for this version aren't empty (warning only)
@@ -142,6 +143,15 @@ if app is not None:
         err(f'update URL {url!r} was not baked into the app image: the Stick could not update itself')
     elif url:
         info.append(f'update source: {url}')
+    tel = os.environ.get('CS_TELEMETRY_URL', '').strip()
+    if tel:
+        tel = tel if tel.endswith('/') else tel + '/'   # embed_files.py normalizes it the same way
+        if tel.encode() not in app:
+            err(f'telemetry destination {tel!r} was set (CS_TELEMETRY_URL) but not baked into the app image')
+        else:
+            info.append(f'telemetry destination: {tel}')
+    else:
+        info.append('no telemetry destination baked in (the opt-in checkbox stays hidden until one is set in settings)')
 
 for w in warnings:
     print(f'::warning title=release::{w}')

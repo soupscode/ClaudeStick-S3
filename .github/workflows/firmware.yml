@@ -88,6 +88,7 @@ jobs:
         run: python3 tools/verify_release.py
         env:
           CS_UPDATE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          CS_TELEMETRY_URL: ${{ vars.CS_TELEMETRY_URL }}
       - name: Build report (size + compiler warnings)
         if: always()
         run: |

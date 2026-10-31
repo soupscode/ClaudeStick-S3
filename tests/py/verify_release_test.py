@@ -3,6 +3,7 @@ import hashlib, json, os, shutil, struct, subprocess, sys, tempfile
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 SCRIPT = os.path.join(ROOT, "tools", "verify_release.py")
 URL = "https://owner.github.io/repo/"
+TEL = "https://stats.example.com/"
 fails = 0
 
 
@@ -15,7 +16,7 @@ def check(name, ok, extra=""):
 def make(root, ver="0.8.0"):
     os.makedirs(root + "/firmware/src"); os.makedirs(root + "/web/firmware")
     open(root + "/firmware/src/main.cpp", "w").write('static const char* FW_VERSION   = "%s";\n' % ver)
-    app = b"\xe9" + os.urandom(1000) + ver.encode() + b"\0" + URL.encode() + b"\0" + os.urandom(500)
+    app = b"\xe9" + os.urandom(1000) + ver.encode() + b"\0" + URL.encode() + b"\0" + TEL.encode() + b"\0" + os.urandom(500)
     open(root + "/web/firmware/claudestick-app.bin", "wb").write(app)
 
     def ent(t, st, o, sz, label):
@@ -28,8 +29,12 @@ def make(root, ver="0.8.0"):
     json.dump({"name": "x", "version": ver, "builds": [{"chipFamily": "ESP32-S3", "parts": [{"path": "firmware/claudestick.bin", "offset": 0}]}]}, open(root + "/web/manifest.json", "w"))
 
 
-def run(root, url=URL):
-    return subprocess.run([sys.executable, SCRIPT, "--root", root], capture_output=True, text=True, env={**os.environ, "CS_UPDATE_URL": url})
+def run(root, url=URL, tel=None):
+    env = {**os.environ, "CS_UPDATE_URL": url}
+    env.pop("CS_TELEMETRY_URL", None)
+    if tel is not None:
+        env["CS_TELEMETRY_URL"] = tel
+    return subprocess.run([sys.executable, SCRIPT, "--root", root], capture_output=True, text=True, env=env)
 
 
 def edit_json(root, f, fn):
@@ -58,6 +63,12 @@ open(d + "/telemetry/claudestick_telemetry.py", "w").write('VERSION = "0.8.0"\n'
 check("a telemetry collector with the matching version passes", run(d).returncode == 0, run(d).stdout)
 open(d + "/telemetry/claudestick_telemetry.py", "w").write('VERSION = "0.7.0"\n')
 check("fails: telemetry collector version differs from the firmware's", run(d).returncode == 1)
+r = run(base + "/good", tel="https://stats.example.com")
+check("telemetry destination baked in (given without the trailing slash): passes and is reported",
+      r.returncode == 0 and "telemetry destination: https://stats.example.com/" in r.stdout, r.stdout)
+check("fails: telemetry destination set but not in the image", run(base + "/good", tel="https://elsewhere.example.org").returncode == 1)
+r = run(base + "/good")
+check("no destination set: passes and says the checkbox stays hidden", r.returncode == 0 and "no telemetry destination baked in" in r.stdout, r.stdout)
 check("fails: update URL not baked in", run(base + "/good", "https://other.github.io/x/").returncode == 1)
 d = base + "/c_slot"; shutil.copytree(base + "/good", d)
 p = d + "/web/firmware/claudestick.bin"; b = bytearray(open(p, "rb").read()); b[0x8000 + 32 * 2 + 3] = 0x20; open(p, "wb").write(b)

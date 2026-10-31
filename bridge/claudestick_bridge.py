@@ -40,6 +40,7 @@ MAX_SESSIONS, MAX_APPROVALS, MAX_STOPS, MAX_MACROS, MAX_LEDGER = 16, 32, 16, 10,
 LITE_SESSIONS, LITE_APPROVALS, LITE_CHOICES, LITE_DETAIL = 6, 8, 4, 800   # what the Stick has room for
 MAX_JSON = 256 * 1024
 MAX_AUDIO = 4 * 1024 * 1024
+MAX_DRAIN = 8 * 1024 * 1024   # most of a refused body we'll read before closing
 MAX_CONNECTIONS = 64
 FAIL_LIMIT, FAIL_WINDOW_S, LOCKOUT_S = 10, 60, 300
 
@@ -658,6 +659,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send({"error": "bad token"}, 401)
         return False
 
+    def discard(self, n):
+        """Read and drop (some of) a body we refused, so the client can finish sending and read our answer:
+        closing with unread data resets the connection and the client may never see the 413."""
+        deadline = time.monotonic() + 10
+        left = min(n, MAX_DRAIN)
+        try:
+            self.connection.settimeout(5)
+            while left > 0 and time.monotonic() < deadline:
+                chunk = self.rfile.read(min(65536, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:
+            pass
+
     def body(self, limit=MAX_JSON):
         """The request body, or None after sending an error."""
         if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
@@ -675,6 +691,7 @@ class Handler(BaseHTTPRequestHandler):
         if n > limit:
             self.close_connection = True
             self.send({"error": "too large"}, 413)
+            self.discard(n)
             return None
         return self.rfile.read(n) if n else b""
 

@@ -26,7 +26,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: tests/run_all.sh --no-browser
+      - name: Tests
+        # On failure, surface the tail of the test output as an annotation (readable via the API/UI summary).
+        run: |
+          set -o pipefail
+          tests/run_all.sh --no-browser 2>&1 | tee test.log || {
+            msg=$(tail -n 60 test.log | sed 's/%/%25/g; s/\r//g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=tests failed::$msg"
+            exit 1
+          }
 
   browser-tests:
     # Setup wizard and phone page in headless Chromium. Informational: it doesn't block publishing.

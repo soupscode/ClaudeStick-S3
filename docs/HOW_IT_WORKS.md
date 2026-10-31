@@ -37,7 +37,8 @@ Every call except the pages below carries `X-Token: <token>` (or `?t=`). Hooks p
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Version, device id, hook hash, heap and uptime. No auth needed for discovery fields. |
+| `GET /health` | Version, device id, hook hash, heap and uptime. No auth needed for discovery fields (the bridge adds `"pair": true`). |
+| `POST /pair/new`, `POST /pair` | Bridge only. `/pair/new` (token needed) makes a one-time 6-digit code, `{"code", "expires_in"}`. `/pair` (no token) trades `{"code"}` for `{"ok", "token", "id"}`; wrong, expired and missing codes all answer `403` alike, a locked-out address `429`. |
 | `POST /event`, `POST /usage` | Session state; context and plan limits. |
 | `POST/GET/DELETE /permission`, `/stop` | Create, poll and cancel approvals and Done/Question cards. |
 | `GET /state`, `POST /act` | What the phone page shows; its actions (approve, deny, choose, say, macro, stop, pin, remote). |

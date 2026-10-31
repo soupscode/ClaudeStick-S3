@@ -2,6 +2,7 @@
 """Install / uninstall the ClaudeStick hooks for Claude Code.
 
   python3 install.py --host 192.168.1.50 --token abcd1234...   # install / update
+  python3 install.py --host https://stick.example.com --pair 123456   # a bridge on the internet, with its one-time code
   python3 install.py --test                                     # ping the device
   python3 install.py --uninstall
 
@@ -20,6 +21,7 @@ import sys
 import time
 
 import importlib.util
+import urllib.error
 import urllib.request
 
 # __file__ is missing when piped in (curl ... | python3 -)
@@ -37,6 +39,17 @@ QUICK = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notif
 
 
 TODO_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+
+def base_url(host, port):
+    """A full address (https://stick.example.com) as given; a bare host or IP is http on its port (the LAN case)."""
+    h = str(host).strip().rstrip("/")
+    return h if h.startswith(("http://", "https://")) else f"http://{h}:{port}"
+
+
+def opener_for(url):
+    """The LAN never goes through a proxy; an https address (the internet) uses the system's proxies and CAs."""
+    return urllib.request.build_opener() if url.startswith("https://") else urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def load_json(path, default):
@@ -98,8 +111,8 @@ def fetch_hook(args):
     port = args.port or (load_json(CONFIG, {}) or {}).get("port") or 7880
     if not host:
         sys.exit("need --host <stick-ip> to download the hook")
-    url = f"http://{host}:{port}/claudestick_hook.py"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    url = f"{base_url(host, port)}/claudestick_hook.py"
+    opener = opener_for(url)
     try:
         with opener.open(url, timeout=10) as r:
             body = r.read()
@@ -120,7 +133,35 @@ def load_hook():
     spec.loader.exec_module(hook)
 
 
+def exchange_pair_code(host, port, code):
+    """Trade a bridge's one-time pairing code for its token (so the token is never typed or pasted)."""
+    url = f"{base_url(host, port)}/pair"
+    req = urllib.request.Request(url, data=json.dumps({"code": code}).encode(), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with opener_for(url).open(req, timeout=10) as r:
+            return json.loads(r.read())["token"]
+    except urllib.error.HTTPError as e:
+        why = {403: "that pairing code is wrong or has expired (a code lasts 5 minutes and dies after 3 wrong tries): "
+                    "make a new one with `claudestick_bridge.py --pair`",
+               404: "this device doesn't take pairing codes (only a bridge does): use --token",
+               429: "too many wrong codes from this address: wait a few minutes"}.get(e.code, f"it answered {e.code}")
+        sys.exit(f"pairing failed: {why}")
+    except (OSError, ValueError, KeyError) as e:
+        sys.exit(f"could not reach {url}: {e}")
+
+
 def install(args):
+    if args.pair:
+        if args.token:
+            sys.exit("use --pair or --token, not both")
+        host = args.host or (load_json(CONFIG, {}) or {}).get("host")
+        if not host:
+            sys.exit("--pair needs --host <bridge address>")
+        port = args.port or (load_json(CONFIG, {}) or {}).get("port") or 7890
+        args.token = exchange_pair_code(host, port, args.pair)
+        args.port = args.port or (None if "://" in str(host) else port)
+        print("paired: got the bridge's token")
     fetch_hook(args)
     load_hook()
 
@@ -233,8 +274,9 @@ def test(_args=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--host", help="device IP or hostname (default claudestick.local)")
+    p.add_argument("--host", help="device IP or hostname (default claudestick.local); a bridge on the internet: https://stick.example.com")
     p.add_argument("--token", help="token shown on the device (menu > info)")
+    p.add_argument("--pair", metavar="CODE", help="a bridge's one-time pairing code instead of its token (see `claudestick_bridge.py --pair`)")
     p.add_argument("--no-statusline", "--no-status-line", dest="no_statusline", action="store_true",
                    help="don't touch the status line (the Stick then can't show plan limits)")
     p.add_argument("--no-todo-tools", action="store_true",

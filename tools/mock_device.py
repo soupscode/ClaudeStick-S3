@@ -300,9 +300,17 @@ class H(BaseHTTPRequestHandler):
                     return self.reply({"ok": True, "set": False})
                 if not re.fullmatch(r"https?://[^/\s@?]+", url):
                     return self.reply({"error": "the address should look like https://stick.example.com"}, 400)
-                tok = str(b.get("token", "")).strip() or (SETUP["bridge"]["tok"] if SETUP["bridge"]["url"] == url else "")
+                code = re.sub(r"\D", "", str(b.get("code", "")))
+                if str(b.get("code", "")).strip():
+                    if len(code) != 6:
+                        return self.reply({"error": "a pairing code is 6 digits"}, 400)
+                    if code != "123456":
+                        return self.reply({"ok": False, "set": False, "error": "that pairing code is wrong or has expired (they last 5 minutes and stop working after 3 wrong tries)"})
+                    tok = "goodtoken"
+                else:
+                    tok = str(b.get("token", "")).strip() or (SETUP["bridge"]["tok"] if SETUP["bridge"]["url"] == url else "")
                 if not tok:
-                    return self.reply({"error": "paste the bridge's token"}, 400)
+                    return self.reply({"error": "paste the bridge's token, or enter a pairing code"}, 400)
                 good = tok == "goodtoken"
                 SETUP["bridge"] = {"url": url, "tok": tok, "up": good, "error": "" if good else "the bridge rejected that token"}
                 return self.reply({"ok": good, "set": True, "error": SETUP["bridge"]["error"]})

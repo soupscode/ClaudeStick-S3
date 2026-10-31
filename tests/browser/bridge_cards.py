@@ -1,5 +1,6 @@
 """Setup page, remote-access parts: Wi-Fi networks and bridge cards on the Stick; settings-only view on the bridge."""
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -95,6 +96,22 @@ with sync_playwright() as p:
     pg.wait_for_selector("#bmsg >> text=turned off")
     check("turning it off clears it", md.SETUP["bridge"]["url"] == "" and pg.input_value("#bu") == "")
     check("the Stick page still has its own cards", pg.is_visible("#fwcard") and not pg.is_visible("#pubcard"))
+    pg.fill("#bu", "https://stick.example.com")
+    pg.fill("#bcode", "12345")
+    pg.click("#brcard button:text-is('connect')")
+    pg.wait_for_selector("#bmsg >> text=6 digits")
+    check("a short pairing code is explained", "6 digits" in pg.inner_text("#bmsg"), pg.inner_text("#bmsg"))
+    pg.fill("#bcode", "000 000")
+    pg.click("#brcard button:text-is('connect')")
+    pg.wait_for_selector("#bmsg >> text=expired")
+    check("a wrong pairing code is explained and nothing is set", "wrong or has expired" in pg.inner_text("#bmsg") and not md.SETUP["bridge"]["up"], md.SETUP["bridge"])
+    pg.fill("#bcode", "123 456")
+    pg.click("#brcard button:text-is('connect')")
+    pg.wait_for_selector("#bmsg >> text=connected")
+    check("a pairing code connects without typing the token", md.SETUP["bridge"]["up"] and md.SETUP["bridge"]["tok"] == "goodtoken", md.SETUP["bridge"])
+    check("the code field is cleared and the token never reaches the page", pg.input_value("#bcode") == "" and "goodtoken" not in pg.content())
+    pg.click("#brcard button:text-is('turn off')")
+    pg.wait_for_selector("#bmsg >> text=turned off")
 
     # ------------------------------------------------------------- first-time setup: away-from-home pieces come up right away
     md.SETUP.update(done=False, connected=True, ssid="home-wifi", nets=[], bt_on=True)
@@ -159,6 +176,43 @@ with sync_playwright() as p:
     check("bridge: the public address comes back and fills the phone link", pb.input_value("#pubu") == "https://stick.example.com" and
           pb.inner_text("#phone").startswith("https://stick.example.com/?t="), pb.inner_text("#phone"))
     pb.screenshot(path=os.path.join(SHOTS, "bridge_cards_bridge.png"), full_page=True)
+    # pairing: a one-time code from the bridge's own page
+    check("bridge: the pair-a-device card is there", pb.is_visible("#paircard"))
+    pb.click("#paircard button")
+    pb.wait_for_selector("#paircode")
+    shown = pb.inner_text("#paircode").replace(" ", "")
+    check("bridge: shows a 6-digit code, the countdown and the install command",
+          shown.isdigit() and len(shown) == 6 and re.fullmatch(r"expires in [45]:\d\d", pb.inner_text("#pairleft")) is not None, (shown, pb.inner_text("#pairleft")))
+    check("bridge: the command carries the code, the port and the public address",
+          f"--pair {shown}" in pb.inner_text("#paircmd") and f"--port {bridge.server_port}" in pb.inner_text("#paircmd") and
+          "https://stick.example.com/install.py" in pb.inner_text("#paircmd"), pb.inner_text("#paircmd"))
+    check("bridge: the shown code is the live one and the long token is not on the card", bridge.core.pair and bridge.core.pair["code"] == shown and
+          "b" * 32 not in pb.inner_text("#pairout"), bridge.core.pair)
+    pb.screenshot(path=os.path.join(SHOTS, "bridge_cards_pair.png"), full_page=True)
+
+    # the phone: no token yet, so it asks for a code
+    ctx = b.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+    ph = ctx.new_page()
+    ph.on("pageerror", lambda e: errs.append(str(e)))
+    ph.goto(f"http://127.0.0.1:{bridge.server_port}/")
+    ph.wait_for_selector("#pc")
+    check("phone: without a token it offers pairing", "Pair this phone" in ph.inner_text("#ub"), ph.inner_text("#ub"))
+    ph.fill("#pc", "000 000" if shown != "000000" else "111 111")
+    ph.click("button:text-is('Pair')")
+    ph.wait_for_selector("#pm >> text=wrong")
+    check("phone: a wrong code is explained and nothing is stored", "wrong or has expired" in ph.inner_text("#pm") and ph.evaluate("localStorage.cst") is None)
+    ph.fill("#pc", shown[:3] + " " + shown[3:])
+    ph.click("button:text-is('Pair')")
+    ph.wait_for_function("localStorage.cst")
+    check("phone: the right code stores the token and spends the code", ph.evaluate("localStorage.cst") == "b" * 32 and bridge.core.pair is None, bridge.core.pair)
+    ph.wait_for_selector("#sel")
+    check("phone: the prompt is gone and the page loads", ph.locator("#pc").count() == 0 and "Send to Claude" in ph.inner_text("main"))
+    ph.screenshot(path=os.path.join(SHOTS, "bridge_cards_phone_paired.png"), full_page=True)
+    # a stale token is dropped and the prompt comes back
+    ph.evaluate("localStorage.cst='stale'")
+    ph.reload()
+    ph.wait_for_selector("#pc")
+    check("phone: a rejected token is dropped and pairing is offered again", ph.evaluate("localStorage.cst") is None)
     pb2 = b.new_page()
     pb2.goto(f"http://127.0.0.1:{bridge.server_port}/setup")
     check("bridge: without the token the page can't read anything", "setup is finished" in pb2.inner_text("#hello") or "token" in pb2.inner_text("#hello"), pb2.inner_text("#hello"))

@@ -267,6 +267,51 @@ int main() {
   REQ_BODY = R"({"url":""})"; hSetupBridge();
   check("/setup/bridge: empty address turns it off", !bridgeConfigured() && PREFS["brurl"] == "" && has(LAST_SENT, "\"set\":false"), LAST_SENT);
 
+  // ---- pairing: a one-time code instead of the token
+  bridgeSave("https://old.example.com", "oldtok"); bridgeUp = false; WiFi.st = WL_CONNECTED; at(NOWEPOCH);
+  HTTP_LOG.clear();
+  script(200, R"({"ok":true,"token":"paired-token-123","id":"abc"})"); script(200, STATE1);
+  REQ_BODY = R"({"url":"https://pair.example.com/","code":"482 913"})"; hSetupBridge();
+  check("pairing: the code is traded for the token and the bridge connects", has(LAST_SENT, "\"ok\":true") && bridgeUp && bridgeUrl == "https://pair.example.com" &&
+        bridgeTok == "paired-token-123" && PREFS["brtok"] == "paired-token-123" && PREFS["brurl"] == "https://pair.example.com", LAST_SENT);
+  check("pairing: the first request is POST /pair with just the digits, and no token header",
+        HTTP_LOG.size() == 2 && has(HTTP_LOG[0], "POST https://pair.example.com/pair") && has(HTTP_LOG[0], "{\"code\":\"482913\"}") &&
+        !has(HTTP_LOG[0], "X-Token") && has(HTTP_LOG[0], "Content-Type: application/json"), HTTP_LOG.empty() ? "" : HTTP_LOG[0]);
+  check("pairing: the next request already uses the token it got", has(HTTP_LOG[1], "GET https://pair.example.com/state") && has(HTTP_LOG[1], "X-Token: paired-token-123"), HTTP_LOG[1]);
+  check("pairing: the token is never sent back to the browser", !has(LAST_SENT, "paired-token-123"), LAST_SENT);
+  hSetupInfo();
+  check("pairing: /setup/info doesn't show it either", !has(LAST_SENT, "paired-token-123"), LAST_SENT);
+
+  bridgeSave("https://keep.example.com", "keeptok"); bridgeUp = false;
+  script(403, R"({"error":"wrong or expired pairing code"})");
+  REQ_BODY = R"({"url":"https://other.example.com","code":"111111"})"; hSetupBridge();
+  check("pairing: a wrong code says so", has(LAST_SENT, "\"ok\":false") && has(LAST_SENT, "wrong or has expired"), LAST_SENT);
+  check("pairing: ...and leaves the earlier bridge settings exactly as they were",
+        bridgeUrl == "https://keep.example.com" && bridgeTok == "keeptok" && PREFS["brurl"] == "https://keep.example.com" && PREFS["brtok"] == "keeptok" && has(LAST_SENT, "\"set\":true"), LAST_SENT);
+  script(429, R"({"error":"too many wrong codes"})");
+  REQ_BODY = R"({"url":"https://other.example.com","code":"111111"})"; hSetupBridge();
+  check("pairing: locked out -> says to wait", has(LAST_SENT, "too many wrong codes"), LAST_SENT);
+  script(404, "{}");
+  REQ_BODY = R"({"url":"https://a-website.example.com","code":"111111"})"; hSetupBridge();
+  check("pairing: a site with no /pair isn't a bridge", has(LAST_SENT, "isn't a ClaudeStick bridge"), LAST_SENT);
+  script(200, "not json");
+  REQ_BODY = R"({"url":"https://other.example.com","code":"111111"})"; hSetupBridge();
+  check("pairing: an answer without a token is a failure, not a half-saved bridge", has(LAST_SENT, "\"ok\":false") && bridgeTok == "keeptok", LAST_SENT);
+  REQ_BODY = R"({"url":"https://other.example.com","code":"12345"})"; hSetupBridge();
+  check("pairing: a code that isn't 6 digits is refused before anything is sent", LAST_CODE == 400 && has(LAST_SENT, "6 digits"), LAST_SENT);
+  HTTP_LOG.clear();
+  WiFi.st = WL_IDLE_STATUS; REQ_BODY = R"({"url":"https://other.example.com","code":"111111"})"; hSetupBridge();
+  check("pairing: not on Wi-Fi -> says so and sends nothing", HTTP_LOG.empty() && has(LAST_SENT, "isn't on Wi-Fi"), LAST_SENT);
+  WiFi.st = WL_CONNECTED;
+  script(200, R"({"ok":true,"token":"viacode"})"); script(200, STATE1);
+  REQ_BODY = R"({"url":"https://both.example.com","token":"typed","code":"222222"})"; hSetupBridge();
+  check("pairing: given both, the code wins", bridgeTok == "viacode", bridgeTok.c_str());
+  check("pairing: /pair over plain http (a bridge on the LAN) works too", [&] {
+    HTTP_LOG.clear(); script(200, R"({"ok":true,"token":"lantok"})"); script(200, STATE1);
+    REQ_BODY = R"({"url":"http://192.168.1.20:7890","code":"333333"})"; hSetupBridge();
+    return has(HTTP_LOG[0], "POST http://192.168.1.20:7890/pair") && bridgeTok == "lantok"; }());
+  bridgeSave("", ""); bridgeUp = false;
+
   // ---- speech to text through the bridge
   bridgeSave("https://stick.example.com", "tok123"); bridgeUp = true;
   String text; uint8_t wav[64] = {};

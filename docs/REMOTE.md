@@ -24,6 +24,8 @@ python3 bridge/claudestick_bridge.py
 
 The first run creates `~/.claudestick-bridge/` (private to you) with a random token and prints it together with the install command. `--show-token` prints them again, `--rotate-token` makes a new token, `--data DIR` moves the folder. To keep it running, use a service. A systemd example is in [`bridge/claudestick-bridge.service`](../bridge/claudestick-bridge.service) (edit the user and paths, then `systemctl enable --now claudestick-bridge`).
 
+**Pairing codes.** To set up a device without typing the long token, ask for a one-time code: `python3 bridge/claudestick_bridge.py --pair` (while the bridge runs) or the **pair a device** card on its settings page. A code is 6 digits, works once, lasts 5 minutes and dies after 3 wrong tries. The Stick, the phone page and the installer each trade it for the token themselves, so the token is never typed or pasted.
+
 Its settings page is `http://<bridge-ip>:7890/setup?t=<token>`: macros, approval waits, voice, ntfy and its **public address** (step 3). The page also shows the install command and the phone link.
 
 ## 2. Point Claude Code at the bridge
@@ -33,6 +35,8 @@ On every machine where you run `claude`, run the command the bridge printed (or 
 ```bash
 curl -s http://<bridge-ip>:7890/install.py | python3 - --host <bridge-ip> --port 7890 --token <token>
 ```
+
+With a pairing code instead of the token, use `--pair 123456` (and for a bridge on the internet, give its full address: `--host https://stick.example.com --pair 123456`). The code is spent on the first try and not saved anywhere; the installer stores the token it got back, in the same private file as before.
 
 This is the same installer as for a Stick, so it's safe to re-run and `--uninstall` still works. If a machine was installed against a Stick before, this simply points it at the bridge. Hooks and the bridge speak plain HTTP on your home network; they never need the public address.
 
@@ -81,13 +85,13 @@ No proxy at all? `--tls-cert fullchain.pem --tls-key privkey.pem` serves HTTPS d
 The Stick's setup page (the one the flasher opens, or `http://<stick-ip>:7880/setup?t=<token>` later; do this at home) asks for everything:
 
 - **wi-fi networks:** add your **phone's hotspot** (name and password). The Stick keeps up to four networks and joins the strongest one it can see, so it follows you from home to the hotspot. The Stick is 2.4 GHz only: make sure the hotspot offers 2.4 GHz (many phones have a "maximize compatibility" or band setting for this). WPA2 personal is what it speaks.
-- **remote access (bridge):** the bridge's public address (`https://stick.example.com`) and its token, then **connect**. The page tells you if the address, the token or the connection is wrong.
+- **remote access (bridge):** the bridge's public address (`https://stick.example.com`) and either its token or a fresh **pairing code**, then **connect**. The page tells you if the address, the token, the code or the connection is wrong.
 - **remote mode:** *always on* is right for a device you carry (see *What to expect*).
 - **Bluetooth:** switch it off if you won't be near your computer; it saves battery.
 
 A small cloud in the status bar shows the link: green connected, red can't reach it, grey still connecting. The info screen says why.
 
-Your phone can use the bridge too: the setup page shows the phone link (`https://stick.example.com/?t=<token>`). It works without a Stick at all.
+Your phone can use the bridge too: open the bridge's address and enter a pairing code, or use the phone link the setup page shows (`https://stick.example.com/?t=<token>`). It works without a Stick at all.
 
 ## What to expect
 
@@ -105,6 +109,8 @@ Your phone can use the bridge too: the setup page shows the phone link (`https:/
 Anyone with the token can approve what Claude runs on your machines. Treat the token like an SSH key.
 
 - 128-bit random token, compared in constant time. Ten wrong tokens from one address lock it out for five minutes (`429`).
+- Pairing codes are the only thing besides the pages that works without the token. A code is made by someone who already has the token, is single-use, lasts 5 minutes, and is replaced when a new one is made. Three wrong tries kill it; five wrong tries from one address lock that address out of pairing for five minutes. Someone who can reach the bridge can burn a live code by guessing (you just make another), but 6 digits and these limits make guessing one hopeless. Like typing the token, the exchange is only private over HTTPS.
+- There is one token for everything: you can't revoke a single device. If a phone is lost or a machine is retired, rotate with `--rotate-token` and pair the rest again.
 - Everything except `/health`, the pages and the installer needs the token. Request sizes and open connections are capped.
 - Use HTTPS on anything reachable from the internet. The Stick verifies the certificate against its embedded Mozilla root list; `http://` addresses are for a VPN or LAN and send the token in clear text.
 - The phone link carries the token in the URL, so it appears in your proxy's access logs and your browser history. Rotate with `--rotate-token` if it leaks, then re-run the install command on each machine and re-enter the token on the Stick and phone.
@@ -130,6 +136,7 @@ See also [SECURITY.md](../SECURITY.md).
 | `low memory` | Not enough free RAM for TLS right now; restart the Stick. |
 | `not a ClaudeStick bridge` | The address answers but isn't the bridge (wrong port or proxy path). |
 | `too many attempts, waiting` | Your address was locked out for five minutes after repeated wrong tokens. |
+| `that pairing code is wrong or has expired` | Codes work once, last 5 minutes and die after 3 wrong tries. Make a new one (`--pair`, or the bridge's setup page). |
 | Settings page says *the Stick isn't on Wi-Fi yet* | Connect it to Wi-Fi first, then save the bridge address. |
 | `claude` asks in the terminal instead of the Stick | Remote mode is off or nothing is connected to the bridge; see *Remote mode* above. |
 

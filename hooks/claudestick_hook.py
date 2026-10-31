@@ -151,6 +151,19 @@ def load_config():
 # ------------------------------------------------------------------ transport
 
 _lan = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never use HTTP(S)_PROXY for the LAN
+_web = urllib.request.build_opener()   # an https:// bridge address is on the internet: system proxies and CA certificates apply
+
+
+def base_url(host, port):
+    """How to reach the device: a full address (https://stick.example.com) is used as given, a bare host or
+    IP is http on its port (the LAN case)."""
+    h = str(host).strip().rstrip("/")
+    return h if h.startswith(("http://", "https://")) else f"http://{h}:{port}"
+
+
+def _open(req, timeout):
+    https = req.full_url.startswith("https://")
+    return (_web if https else _lan).open(req, timeout=timeout + (2 if https else 0))   # a TLS handshake needs more headroom
 
 
 def _recent(path, seconds):
@@ -178,7 +191,7 @@ def _http_json(url, token="", method="GET", body=None, timeout=1.5):
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("X-Token", token)
-    with _lan.open(req, timeout=timeout) as r:
+    with _open(req, timeout) as r:
         return json.loads(r.read() or b"{}")
 
 
@@ -324,8 +337,8 @@ def fold_payload(obj, key=None):
 class Device:
     def __init__(self, cfg, may_discover=False):
         self.cfg = cfg
-        self.may_discover = may_discover
-        self.base = f"http://{cfg['host']}:{cfg['port']}"
+        self.may_discover = may_discover and "://" not in str(cfg["host"])   # a named https address doesn't move
+        self.base = base_url(cfg["host"], cfg["port"])
         self.token = cfg.get("token", "")
 
     def call(self, method, path, body=None, timeout=1.5):
@@ -371,7 +384,7 @@ class Device:
                 if not want or hashlib.sha256(f.read()).hexdigest() == want:
                     return
             req = urllib.request.Request(self.base + "/claudestick_hook.py")
-            with _lan.open(req, timeout=5) as resp:
+            with _open(req, 5) as resp:
                 body = resp.read()
             if hashlib.sha256(body).hexdigest() != want:
                 return
@@ -798,7 +811,7 @@ def notify(cfg, title, body, priority="default", actions=None):
     """Optional phone push via ntfy. Action buttons call the Stick directly (phone must reach it)."""
     if not cfg.get("ntfy_url"):
         return
-    base = (cfg.get("public_url") or "").rstrip("/") or f"http://{cfg['host']}:{cfg['port']}"
+    base = (cfg.get("public_url") or "").rstrip("/") or base_url(cfg["host"], cfg["port"])
     req = urllib.request.Request(cfg["ntfy_url"], data=clip(body, 400).encode(), method="POST")
     req.add_header("Title", clip(title, 80))
     req.add_header("Priority", priority)

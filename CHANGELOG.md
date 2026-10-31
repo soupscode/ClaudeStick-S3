@@ -2,6 +2,11 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.3
+- Pair with a 6-digit code instead of the long token: Stick, phone page and installer (`--pair`)
+- The bridge makes codes from its setup page or `claudestick_bridge.py --pair`; each works once for 5 minutes
+- Hooks and the installer can now reach a bridge by its https address
+
 ## 0.9.2
 - Opt-in telemetry: off by default, hidden until a destination is set, see docs/TELEMETRY.md
 - Self-hosted telemetry collector (telemetry/) with a one-command quickstart

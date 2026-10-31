@@ -51,7 +51,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.2";
+static const char*    FW_VERSION   = "0.9.3";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -1537,14 +1537,40 @@ static void hSetupWifiForget() {
 static void hSetupBridge() {
   if (!setupAuthed()) return;
   JsonDocument in; if (!readBody(in)) return;
-  String url = in["url"] | "", tok = in["token"] | "";
+  String url = in["url"] | "", tok = in["token"] | "", codeIn = in["code"] | "";
   JsonDocument out;
   url.trim(); tok.trim();
   if (!url.length()) { bridgeSave("", ""); bridgeDrop(); out["ok"] = true; out["set"] = false; sendJson(out); return; }
   url = bridgeCleanUrl(url);
   if (!url.length()) { server.send(400, "application/json", "{\"error\":\"the address should look like https://stick.example.com\"}"); return; }
+  String digits;
+  for (size_t i = 0; i < codeIn.length(); i++) if (codeIn[i] >= '0' && codeIn[i] <= '9') digits += codeIn[i];
+  if (codeIn.length() && digits.length() != 6) { server.send(400, "application/json", "{\"error\":\"a pairing code is 6 digits\"}"); return; }
+  if (digits.length()) {   // a one-time pairing code stands in for the token: the bridge hands the real one back
+    String oldUrl = bridgeUrl, oldTok = bridgeTok;
+    bridgeUrl = url; bridgeTok = "";   // only for this one request: nothing is kept until the code is accepted
+    bridgeTls.stop(); bridgePlain.stop();   // a fresh connection: the kept-alive one (if any) is to the old address
+    JsonDocument pj; pj["code"] = digits;
+    String pbody, presp; serializeJson(pj, pbody);
+    int pc = WiFi.status() == WL_CONNECTED ? bridgeRequest("POST", "/pair", pbody, presp, 6000, "application/json", nullptr, 0, false) : -3;
+    String pairErr = bridgeErr;
+    bridgeTls.stop(); bridgePlain.stop();
+    bridgeUrl = oldUrl; bridgeTok = oldTok;
+    JsonDocument pr;
+    if (pc == 200 && !deserializeJson(pr, presp)) tok = (const char*)(pr["token"] | "");
+    if (!tok.length()) {   // the earlier bridge settings are untouched
+      out["ok"] = false; out["set"] = bridgeConfigured();
+      out["error"] = pc == 403 ? "that pairing code is wrong or has expired (they last 5 minutes and stop working after 3 wrong tries)" :
+                     pc == 429 ? "too many wrong codes from this network: wait a few minutes" :
+                     pc == 404 ? "that address answered, but it isn't a ClaudeStick bridge" :
+                     pc > 0 ? "the bridge answered " + String(pc) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
+                     pairErr.length() ? pairErr : "could not reach it";
+      sendJson(out);
+      return;
+    }
+  }
   if (!tok.length() && url == bridgeUrl) tok = bridgeTok;
-  if (!tok.length() || tok.length() > 64) { server.send(400, "application/json", "{\"error\":\"paste the bridge's token\"}"); return; }
+  if (!tok.length() || tok.length() > 64) { server.send(400, "application/json", "{\"error\":\"paste the bridge's token, or enter a pairing code\"}"); return; }
   bridgeDrop();
   bridgeSave(url, tok);
   String body;

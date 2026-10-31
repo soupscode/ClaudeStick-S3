@@ -95,6 +95,63 @@ check("install: 8 hooks", len(json.load(open(home + "/.claude/settings.json"))["
 HOOK = home + "/.claudestick/claudestick_hook.py"
 check("the installed hook is the bridge's copy", open(HOOK, "rb").read() == open(ROOT + "/hooks/claudestick_hook.py", "rb").read())
 
+# --- install with a one-time pairing code instead of the token
+def install_with(extra, home_dir, extra_env=None):
+    e = dict(os.environ, HOME=home_dir, **(extra_env or {}))
+    return subprocess.run(["bash", "-c", f"curl -s http://127.0.0.1:{PORT}/install.py | python3 - {extra}"],
+                          cwd=work, env=e, capture_output=True, text=True), e
+
+
+home_p = tempfile.mkdtemp()
+code = api("POST", "/pair/new")["code"]
+r, _ = install_with(f"--host 127.0.0.1 --port {PORT} --pair '{code[:3]} {code[3:]}'", home_p)
+lp = json.load(open(home_p + "/.claudestick/config.json")) if os.path.exists(home_p + "/.claudestick/config.json") else {}
+check("pair install: a spaced code is accepted and the token ends up in the local config", lp.get("token") == TOKEN and "token OK" in r.stdout, r.stdout + r.stderr)
+check("pair install: the code is not stored anywhere", code not in open(home_p + "/.claudestick/config.json").read())
+home_q = tempfile.mkdtemp()
+r, _ = install_with(f"--host 127.0.0.1 --port {PORT} --pair {code}", home_q)
+check("pair install: a code works once", r.returncode != 0 and "wrong or has expired" in (r.stdout + r.stderr) and not os.path.exists(home_q + "/.claudestick/config.json"), r.stdout + r.stderr)
+r, _ = install_with(f"--host 127.0.0.1 --port {PORT} --pair 12345", home_q)
+check("pair install: a short code is refused (nothing installed)", r.returncode != 0 and not os.path.exists(home_q + "/.claudestick/config.json"), r.stdout + r.stderr)
+r, _ = install_with(f"--host 127.0.0.1 --port {PORT} --pair 123456 --token {TOKEN}", home_q)
+check("pair install: --pair and --token together are refused", r.returncode != 0 and "not both" in (r.stdout + r.stderr), r.stdout + r.stderr)
+
+# --- a bridge on https (self-signed here): install by code, then the hook talks to it
+cert_dir = tempfile.mkdtemp()
+subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", cert_dir + "/k.pem", "-out", cert_dir + "/c.pem",
+                "-days", "2", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], capture_output=True, check=True)
+tls_srv = br.make_server(store, "127.0.0.1", 0, core=core, tls_cert=cert_dir + "/c.pem", tls_key=cert_dir + "/k.pem")
+TLS_PORT = tls_srv.server_port
+threading.Thread(target=tls_srv.serve_forever, daemon=True).start()
+HTTPS = f"https://127.0.0.1:{TLS_PORT}"
+home_s = tempfile.mkdtemp()
+trust = {"SSL_CERT_FILE": cert_dir + "/c.pem"}
+code = api("POST", "/pair/new")["code"]
+r = subprocess.run(["python3", ROOT + "/install.py", "--host", HTTPS, "--pair", code], cwd=work, env=dict(os.environ, HOME=home_s),
+                   capture_output=True, text=True)
+check("https: an untrusted certificate is refused, never skipped", r.returncode != 0 and not os.path.exists(home_s + "/.claudestick/config.json"), r.stdout + r.stderr)
+code = api("POST", "/pair/new")["code"]
+r = subprocess.run(["python3", ROOT + "/install.py", "--host", HTTPS, "--pair", code], cwd=work, env=dict(os.environ, HOME=home_s, **trust),
+                   capture_output=True, text=True)
+ls = json.load(open(home_s + "/.claudestick/config.json")) if os.path.exists(home_s + "/.claudestick/config.json") else {}
+check("https: installs by code over a trusted certificate and keeps the full address as the host", ls.get("host") == HTTPS and ls.get("token") == TOKEN and "token OK" in r.stdout,
+      (ls, r.stdout + r.stderr))
+env_s = dict(os.environ, HOME=home_s, **trust)
+tp_s = home_s + "/t.jsonl"
+open(tp_s, "w").write("")
+p = subprocess.Popen([sys.executable, home_s + "/.claudestick/claudestick_hook.py"], env=env_s, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+p.stdin.write(json.dumps({"session_id": "hs1", "cwd": work, "transcript_path": tp_s, "hook_event_name": "UserPromptSubmit", "prompt": "over https"}))
+p.stdin.close()
+p.wait(timeout=20)
+seen = False
+for _ in range(80):
+    seen = any(x["id"] == "hs1" for x in core.poll(None)["sessions"])
+    if seen:
+        break
+    time.sleep(0.1)
+check("https: the hook reaches the bridge and registers its session", seen, core.poll(None))
+tls_srv.shutdown()
+
 repo = os.path.join(work, "api-server")
 os.makedirs(repo)
 git_env = {**env, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b"}

@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.2"
+VERSION = "0.9.3"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it
@@ -43,6 +43,7 @@ MAX_AUDIO = 4 * 1024 * 1024
 MAX_DRAIN = 8 * 1024 * 1024   # most of a refused body we'll read before closing
 MAX_CONNECTIONS = 64
 FAIL_LIMIT, FAIL_WINDOW_S, LOCKOUT_S = 10, 60, 300
+PAIR_TTL_S, PAIR_MAX_FAILS, PAIR_FAIL_LIMIT = 300, 3, 5   # a pairing code: 5 minutes, then 3 wrong tries kill it; 5 wrong tries lock an address
 
 DEFAULT_MACROS = [
     {"label": "Continue", "text": "Continue."},
@@ -167,6 +168,7 @@ class Core:
         self.clients = {}                 # who polled /state, and when
         self.v, self._key = 0, ""
         self.hook_sha = ""
+        self.pair = None                  # the one active pairing code: {"code", "exp", "fails"}
 
     @property
     def conf(self):
@@ -478,6 +480,33 @@ class Core:
             snap["limits"] = {k: dict(v) for k, v in self.limits.items()}
         return snap
 
+    # -- pairing codes: a short one-time code that a client trades for the real token
+    def pair_new(self):
+        """Make a code (replacing any earlier one). Only an authenticated caller gets here, so a code
+        can only exist because the owner asked for it, and an attacker never gets to guess against one
+        they didn't see created: each code allows PAIR_MAX_FAILS wrong tries in total, then it's gone."""
+        with self.lock:
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            self.pair = {"code": code, "exp": self.mono() + PAIR_TTL_S, "fails": 0}
+            return {"code": code, "expires_in": PAIR_TTL_S}
+
+    def pair_claim(self, raw):
+        """The real token for the right, unexpired code (which is then spent); otherwise None."""
+        digits = "".join(c for c in raw if c.isdigit()) if isinstance(raw, str) else ""
+        with self.lock:
+            p = self.pair
+            if p and self.mono() > p["exp"]:
+                p = self.pair = None
+            if not p:
+                return None
+            if len(digits) == 6 and hmac.compare_digest(digits.encode(), p["code"].encode()):
+                self.pair = None
+                return self.store.ident["token"]
+            p["fails"] += 1
+            if p["fails"] >= PAIR_MAX_FAILS:
+                self.pair = None
+            return None
+
     # -- settings
     def config_get(self, secrets_too=False):
         with self.lock:
@@ -492,16 +521,13 @@ class Core:
 
 # ------------------------------------------------------------ rate limiting
 
-class AuthGuard:
-    """Constant-time token check, plus a lockout for addresses that keep guessing."""
+class FailGuard:
+    """A lockout for addresses that keep getting something wrong (`limit` misses in `window` s -> `lockout` s)."""
 
-    def __init__(self, token, mono=time.monotonic):
-        self.token, self.mono = token.encode(), mono
+    def __init__(self, limit=FAIL_LIMIT, window=FAIL_WINDOW_S, lockout=LOCKOUT_S, mono=time.monotonic):
+        self.limit, self.window, self.lockout, self.mono = limit, window, lockout, mono
         self.fails = {}   # ip -> [count, window start, locked until]
         self.lock = threading.Lock()
-
-    def ok(self, supplied):
-        return bool(supplied) and hmac.compare_digest(supplied.encode("utf-8", "replace"), self.token)
 
     def locked(self, ip):
         with self.lock:
@@ -509,19 +535,30 @@ class AuthGuard:
             return max(0, int(f[2] - self.mono())) + 1 if f and f[2] > self.mono() else 0
 
     def fail(self, ip):
-        """Count a wrong token. Returns True when this address just got locked out."""
+        """Count a miss. Returns True when this address just got locked out."""
         now = self.mono()
         with self.lock:
             if len(self.fails) > 2048:
-                self.fails = {k: v for k, v in self.fails.items() if v[2] > now or now - v[1] < FAIL_WINDOW_S}
+                self.fails = {k: v for k, v in self.fails.items() if v[2] > now or now - v[1] < self.window}
             f = self.fails.setdefault(ip, [0, now, 0.0])
-            if now - f[1] > FAIL_WINDOW_S:
+            if now - f[1] > self.window:
                 f[0], f[1] = 0, now
             f[0] += 1
-            if f[0] >= FAIL_LIMIT:
-                f[0], f[2] = 0, now + LOCKOUT_S
+            if f[0] >= self.limit:
+                f[0], f[2] = 0, now + self.lockout
                 return True
             return False
+
+
+class AuthGuard(FailGuard):
+    """Constant-time token check, plus the lockout."""
+
+    def __init__(self, token, mono=time.monotonic):
+        super().__init__(mono=mono)
+        self.token = token.encode()
+
+    def ok(self, supplied):
+        return bool(supplied) and hmac.compare_digest(supplied.encode("utf-8", "replace"), self.token)
 
 
 # --------------------------------------------------------------------- HTTP
@@ -572,8 +609,9 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 64
     allow_reuse_address = True
 
-    def __init__(self, addr, handler, core, guard, trust_proxy=False, tls=None, verbose=False):
+    def __init__(self, addr, handler, core, guard, trust_proxy=False, tls=None, verbose=False, pair_guard=None):
         self.core, self.guard, self.trust_proxy, self.tls, self.verbose = core, guard, trust_proxy, tls, verbose
+        self.pair_guard = pair_guard or FailGuard(PAIR_FAIL_LIMIT, FAIL_WINDOW_S, LOCKOUT_S, mono=guard.mono)
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         super().__init__(addr, handler)
 
@@ -695,8 +733,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(n) if n else b""
 
-    def json_body(self):
-        raw = self.body()
+    def json_body(self, limit=MAX_JSON):
+        raw = self.body(limit)
         if raw is None:
             return None
         try:
@@ -715,7 +753,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/health":
             hook = read_asset("hooks/claudestick_hook.py", "claudestick_hook.py")
             return self.send({"ok": True, "fw": VERSION, "bridge": True, "name": "ClaudeStick bridge",
-                              "id": core.store.ident["id"], "host": "", "auth": True,
+                              "id": core.store.ident["id"], "host": "", "auth": True, "pair": True,
                               "hook": hashlib.sha256(hook).hexdigest() if hook else ""})
         if p in ("/", "/setup", "/install.py", "/claudestick_hook.py"):
             name = {"/": ("firmware/phone_page.html", "phone_page.html", "text/html; charset=utf-8"),
@@ -758,6 +796,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         p, q = urlparse(self.path).path.rstrip("/"), self.query()
         core = self.server.core
+        if p == "/pair":   # the one POST that takes no token: a one-time code stands in for it
+            return self.pair()
         if not self.authed():
             return
         if p == "/stt":
@@ -765,6 +805,8 @@ class Handler(BaseHTTPRequestHandler):
         b = self.json_body()
         if b is None:
             return
+        if p == "/pair/new":
+            return self.send(core.pair_new())
         if p == "/act":
             if not b:   # query-string form, used by ntfy notification buttons
                 b = {"action": q.get("action"), "session": q.get("session")}
@@ -781,6 +823,24 @@ class Handler(BaseHTTPRequestHandler):
             code, out = (core.permission_new if p == "/permission" else core.stop_new)(b)
             return self.send(out, code)
         self.send({"error": "not found"}, 404)
+
+    def pair(self):
+        """Trade a pairing code for the token. Wrong, expired and absent codes all look the same."""
+        ip, guard = self.client_ip(), self.server.pair_guard
+        wait = guard.locked(ip)
+        if wait:
+            self.close_connection = True
+            return self.send({"error": "too many wrong codes"}, 429, extra=[("Retry-After", str(wait))])
+        b = self.json_body(1024)
+        if b is None:
+            return
+        token = self.server.core.pair_claim(b.get("code"))
+        if token is None:
+            if guard.fail(ip):
+                sys.stderr.write(f"claudestick-bridge: {ip} locked out of pairing for {LOCKOUT_S}s after wrong codes\n")
+            return self.send({"error": "wrong or expired pairing code"}, 403)
+        sys.stderr.write(f"claudestick-bridge: paired a device from {ip}\n")
+        self.send({"ok": True, "token": token, "id": self.server.core.store.ident["id"]})
 
     def stt(self):
         """Speech to text for the Stick: a WAV in, {"text": ...} out, using the server set in the bridge's settings."""
@@ -820,6 +880,31 @@ def make_server(store, host="0.0.0.0", port=7890, trust_proxy=False, tls_cert=No
     return Server((host, port), Handler, core, guard, trust_proxy, ctx, verbose)
 
 
+def pair_command(store, port, ip):
+    """Ask the bridge that's running on this machine for a pairing code (it needs the token, which we hold)."""
+    body = json.dumps({}).encode()
+    headers = {"X-Token": store.ident["token"], "Content-Type": "application/json"}
+    for scheme, handler in (("http", urllib.request.HTTPHandler()),
+                            ("https", urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))):   # loopback only
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), handler)
+        try:
+            with opener.open(urllib.request.Request(f"{scheme}://127.0.0.1:{port}/pair/new", data=body, headers=headers), timeout=5) as r:
+                out = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            print(f"the bridge refused ({e.code}); is this the data directory it is using? (--data)", file=sys.stderr)
+            return 1
+        except (OSError, ValueError):
+            continue
+        code = out["code"]
+        print(f"pairing code: {code[:3]} {code[3:]}   (single use, valid {out['expires_in'] // 60} minutes, dies after {PAIR_MAX_FAILS} wrong tries)\n"
+              f"  Stick:    its setup page -> remote access -> pairing code (with the bridge's address)\n"
+              f"  phone:    open the bridge's address and enter it\n"
+              f"  computer: curl -s http://{ip}:{port}/install.py | python3 - --host {ip} --port {port} --pair {code}")
+        return 0
+    print(f"no bridge answering on port {port}: start it first (or pass --port)", file=sys.stderr)
+    return 1
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="0.0.0.0", help="address to listen on (default 0.0.0.0)")
@@ -832,6 +917,8 @@ def main(argv=None):
     p.add_argument("--tls-key", help="private key for --tls-cert")
     p.add_argument("--show-token", action="store_true", help="print the token and the install command, then exit")
     p.add_argument("--rotate-token", action="store_true", help="make a new token (every client must be set up again)")
+    p.add_argument("--pair", action="store_true",
+                   help="ask the running bridge for a one-time 6-digit pairing code (5 minutes) and print how to use it, then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="log every request (never the token)")
     a = p.parse_args(argv)
 
@@ -843,6 +930,8 @@ def main(argv=None):
     if a.show_token:
         print(f"token: {token}\n{install}")
         return 0
+    if a.pair:
+        return pair_command(store, a.port, ip)
     if bool(a.tls_cert) != bool(a.tls_key):
         p.error("--tls-cert and --tls-key go together")
     srv = make_server(store, a.host, a.port, a.trust_proxy, a.tls_cert, a.tls_key, a.verbose)
@@ -853,6 +942,7 @@ def main(argv=None):
               f"then point the Stick (or your phone) at this bridge. See docs/REMOTE.md.")
     else:
         print("token: run with --show-token to print it again")
+    print("no typing the token: run with --pair (while this is running) for a one-time 6-digit code")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

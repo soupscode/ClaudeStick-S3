@@ -172,6 +172,103 @@ check("proxy: a spoofed leading X-Forwarded-For entry doesn't help",
       call("GET", "/state", headers={"X-Forwarded-For": "198.51.100.4, 203.0.113.9"}, port=psrv.server_port)[0] == 429)
 psrv.shutdown()
 
+# ----------------------------------------------------------------- pairing codes
+def pair(code, port=None):
+    return call("POST", "/pair", {"code": code}, token="", port=port)
+
+
+check("/health says the bridge can pair", get("/health", token="")[1].get("pair") is True)
+check("a code can't be made without the token", call("POST", "/pair/new", {}, token="")[0] == 401)
+check("...nor with a wrong one", call("POST", "/pair/new", {}, token="x" * 32)[0] == 401)
+st, j = post("/pair/new")
+code = j["code"]
+check("a code is 6 digits, valid for 5 minutes", st == 200 and len(code) == 6 and code.isdigit() and j["expires_in"] == br.PAIR_TTL_S, j)
+st, j, _ = pair("000000" if code != "000000" else "111111")
+check("a wrong code is refused (403), without saying why", st == 403 and j == {"error": "wrong or expired pairing code"}, j)
+st, j, _ = pair(code)
+check("the right code, with no token at all, returns the real token", st == 200 and j["token"] == TOKEN and j["id"] == store.ident["id"], j)
+st, j, _ = pair(code)
+check("...and it's single use: the same code again is refused", st == 403, j)
+check("the token it returned really works", get("/state", token=j.get("token") or TOKEN)[0] == 200)
+
+st, j = post("/pair/new")
+code = j["code"]
+check("spaces and a hyphen are ignored", pair(code[:3] + " - " + code[3:])[0] == 200)
+st, j = post("/pair/new")
+c1 = j["code"]
+st, j = post("/pair/new")
+c2 = j["code"]
+if c1 != c2:
+    check("a new code replaces the old one", pair(c1)[0] == 403 and pair(c2)[0] == 200)
+else:   # one in a million: same code twice
+    check("a new code replaces the old one", pair(c2)[0] == 200)
+clock.t += br.LOCKOUT_S + 5   # each group below starts with a clean per-address count
+check("junk is just a wrong code: numbers, nulls, lists, a missing field",
+      all(call("POST", "/pair", body, token="")[0] == 403 for body in ({"code": 123456}, {"code": None}, {"code": [1]}, {})))
+clock.t += br.LOCKOUT_S + 5
+check("malformed JSON to /pair -> 400", call("POST", "/pair", raw=b"{nope", token="")[0] == 400)
+check("an oversized /pair body is refused (413), not read into memory", call("POST", "/pair", raw=b" " * 5000, token="")[0] == 413)
+
+# three wrong tries burn the code, even for the right one afterwards
+clock.t += br.LOCKOUT_S + 5
+st, j = post("/pair/new")
+code = j["code"]
+wrongs = [w for w in ("111111", "222222", "333333", "444444") if w != code][:br.PAIR_MAX_FAILS]
+for w in wrongs:
+    pair(w)
+st, j, _ = pair(code)
+check("after 3 wrong tries the code is dead, even if you then get it right", st == 403, j)
+check("a spent code can't be revived: it has to be made again by the token holder", post("/pair/new")[0] == 200)
+
+# expiry
+st, j = post("/pair/new")
+code = j["code"]
+clock.t += br.PAIR_TTL_S + 1
+check("an expired code is refused", pair(code)[0] == 403)
+clock.t += br.LOCKOUT_S + 5
+core.pair = None
+st, j, _ = pair("123456")
+check("with no active code, every guess just fails (and looks like any other wrong code)", st == 403 and j == {"error": "wrong or expired pairing code"}, j)
+
+# per-address lockout on /pair, independent of the token lockout
+clock.t += br.LOCKOUT_S + 5
+core.pair = None
+for _ in range(br.PAIR_FAIL_LIMIT):
+    pair("999999")
+st, j, r = call("POST", "/pair", {"code": "999999"}, token="")
+check("wrong codes from one address lock pairing out (429 + Retry-After)", st == 429 and int(r.getheader("Retry-After")) > 0, st)
+post("/pair/new")
+st, j, _ = pair(core.pair["code"])
+check("...even for the right code, while locked out", st == 429)
+check("the lockout is only for /pair: the token still works from that address", get("/state")[0] == 200)
+clock.t += br.LOCKOUT_S + 5
+st, j = post("/pair/new")
+check("the lockout expires", pair(j["code"])[0] == 200)
+
+# nothing secret in the logs
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stderr(buf):
+    st, j = post("/pair/new")
+    pair(j["code"])
+    for _ in range(br.PAIR_FAIL_LIMIT):
+        pair("888888")
+log = buf.getvalue()
+check("the log says a device paired but never the code or the token", "paired a device" in log and TOKEN not in log and j["code"] not in log and "888888" not in log, log)
+clock.t += br.LOCKOUT_S + 5
+
+# the CLI asks the running bridge for a code
+import subprocess
+r = subprocess.run([sys.executable, ROOT + "/bridge/claudestick_bridge.py", "--pair", "--data", data, "--port", str(PORT)],
+                   capture_output=True, text=True, timeout=20)
+check("--pair prints a code and how to use it", r.returncode == 0 and "pairing code:" in r.stdout and "--pair " in r.stdout and
+      "Stick:" in r.stdout and TOKEN not in r.stdout, r.stdout + r.stderr)
+digits = "".join(c for c in r.stdout.split("pairing code:")[1].split("(")[0] if c.isdigit())
+check("...and that code works", pair(digits)[0] == 200)
+r = subprocess.run([sys.executable, ROOT + "/bridge/claudestick_bridge.py", "--pair", "--data", data, "--port", "1"],
+                   capture_output=True, text=True, timeout=20)
+check("--pair with no bridge running says so", r.returncode == 1 and "no bridge answering" in r.stderr, r.stderr)
+
 # ----------------------------------------------------------------- sessions, events
 HOOK = {"session": "s1", "project": "api-server@main"}
 st, j = post("/event", {**HOOK, "event": "working", "detail": "Edit main.py", "can_inject": True})

@@ -31,14 +31,14 @@ Runs on the **M5Stack StickS3**. A small [bridge](docs/REMOTE.md) at home relays
 
 **You need:** an M5Stack **StickS3** (K150) and a USB-C **data** cable; desktop **Chrome or Edge** for flashing; **Python 3** on an always-on machine for the bridge and on each machine where you run `claude`; a way to reach the bridge from outside (a domain with an HTTPS reverse proxy, or a VPN such as Tailscale); and a phone whose hotspot offers 2.4 GHz.
 
-1. **Run the bridge** on a machine at home that stays on, then make it reachable over HTTPS ([how](docs/REMOTE.md)). It prints your token and the command for step 4.
+1. **Run the bridge** on a machine at home that stays on, then make it reachable over HTTPS ([how](docs/REMOTE.md)). It prints your token and the command for step 4 (or run it with `--pair` for a one-time 6-digit code to use instead of the token).
 
    ```bash
    python3 bridge/claudestick_bridge.py
    ```
 
 2. **Flash the Stick.** Open the [web flasher](https://soupscode.github.io/ClaudeStick-S3/) (a fork publishes its own at `https://<owner>.github.io/<repo>/`), click **Install** and accept *erase*, then **Connect to Wi-Fi** with your home network. No computer handy? A fresh Stick opens a hotspot called `ClaudeStick-XXXX`; join it from your phone.
-3. **Set it up** on the page the flasher links to (`http://<stick-ip>:7880/setup`). Add your **phone's hotspot** under *wi-fi networks*, enter the **bridge's address and token**, pick *always on* for remote mode, and choose a name, buddy and volume. The Stick keeps up to four networks and joins the strongest one in range, so it follows you from home to the hotspot.
+3. **Set it up** on the page the flasher links to (`http://<stick-ip>:7880/setup`). Add your **phone's hotspot** under *wi-fi networks*, enter the **bridge's address and token** (or a pairing code), pick *always on* for remote mode, and choose a name, buddy and volume. The Stick keeps up to four networks and joins the strongest one in range, so it follows you from home to the hotspot.
 4. **Connect Claude Code.** Run the command the bridge printed on every machine where you use `claude`. It backs up `~/.claude/settings.json`, adds its hooks next to yours, keeps any status line you have, and is safe to re-run (`--test` checks the connection, `--uninstall` removes everything it added).
 
    ```bash

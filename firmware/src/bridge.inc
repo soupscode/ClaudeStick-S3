@@ -49,7 +49,8 @@ static void bridgeSave(const String& url, const String& tok) {
 
 // One request to the bridge. Returns the HTTP status, or a negative number when nothing was exchanged.
 static int bridgeRequest(const char* method, const String& path, const String& body, String& out,
-                         uint16_t timeoutMs = 3500, const char* ctype = "application/json", const uint8_t* raw = nullptr, size_t rawLen = 0) {
+                         uint16_t timeoutMs = 3500, const char* ctype = "application/json", const uint8_t* raw = nullptr, size_t rawLen = 0,
+                         bool auth = true) {
   bool https = bridgeUrl.startsWith("https://");
   if (https) {
     if (!clockOk()) { bridgeErr = "waiting for the clock"; return -100; }   // certificates need the date
@@ -68,7 +69,7 @@ static int bridgeRequest(const char* method, const String& path, const String& b
   bridgeHttp.setReuse(true);                     // keep the connection (and its TLS session) between polls
   bridgeHttp.setConnectTimeout(4000);
   bridgeHttp.setTimeout(timeoutMs);
-  bridgeHttp.addHeader("X-Token", bridgeTok);
+  if (auth) bridgeHttp.addHeader("X-Token", bridgeTok);   // trading a pairing code for the token is the one call without it
   bridgeHttp.addHeader("X-Client", "stick");
   if (body.length() || rawLen) bridgeHttp.addHeader("Content-Type", ctype);
   int code;

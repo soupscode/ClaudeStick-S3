@@ -48,7 +48,7 @@
 #define CS_UPDATE_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.7.1";
+static const char*    FW_VERSION   = "0.7.2";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -159,7 +159,11 @@ struct Settings {
   String  updateUrl = CS_UPDATE_URL;
 } conf;
 static uint32_t lastStickAt = 0, lastKbdAt = 0;   // auto remote mode inputs
-static int32_t     tzOffset = 0;
+static int32_t     tzOffset = 0;       // fixed offset from the hook / desktop, used only until a time zone is chosen
+static String      tzPosix, tzName;    // chosen zone: POSIX rule (knows daylight saving) and its friendly id
+static bool        clock24 = false;    // false = 12-hour "8:59p"
+static bool        ntpStarted = false;
+static uint8_t     textStyle = 1;       // 0 = classic 6x8, 1 = "code" (same cell, cleaner shapes; see tools/gen_font.py)
 
 enum Screen { SCR_HOME, SCR_INFO, SCR_ACTIONS, SCR_SESSIONS, SCR_HELP, SCR_TEST, SCR_DETAIL };
 static Screen   screen = SCR_HOME;
@@ -246,20 +250,46 @@ static Approval* newApproval() {
 static void setClock(long epoch, long offset) {
   struct timeval tv = { (time_t)epoch, 0 };
   settimeofday(&tv, nullptr);
-  tzOffset = offset;
+  if (!tzPosix.length()) tzOffset = offset;   // a chosen time zone wins over the sender's offset
   clockSet = true;
 }
 
-static String clockStr() {
-  if (!clockSet) return "";
-  time_t t = time(nullptr) + tzOffset;
-  struct tm tm;
-  gmtime_r(&t, &tm);
-  char b[8];
-  snprintf(b, sizeof b, "%02d:%02d", tm.tm_hour, tm.tm_min);
-  return b;
+static bool clockOk() { return time(nullptr) > 1700000000; }   // set by NTP, the hook, the desktop or the setup page
+
+static bool validTz(const String& t) {
+  if (!t.length() || t.length() > 63) return false;
+  for (size_t i = 0; i < t.length(); i++)
+    if (!(isalnum((unsigned char)t[i]) || strchr(",.:/+-<>", t[i]))) return false;
+  return true;
 }
 
+static void applyTimezone() {
+  setenv("TZ", tzPosix.length() ? tzPosix.c_str() : "UTC0", 1);
+  tzset();
+  ntpStarted = false;   // restart SNTP so it uses the rule
+}
+
+// Start SNTP once Wi-Fi is up. No internet is fine: the hook, the desktop and the setup page can still set the time.
+static void ntpTick() {
+  if (ntpStarted || WiFi.status() != WL_CONNECTED) return;
+  ntpStarted = true;
+  configTzTime(tzPosix.length() ? tzPosix.c_str() : "UTC0", "pool.ntp.org", "time.cloudflare.com", "time.google.com");
+}
+
+static String clockStr() {
+  if (!clockOk()) return "";
+  time_t t = time(nullptr);
+  struct tm tm;
+  if (tzPosix.length()) localtime_r(&t, &tm);
+  else { t += tzOffset; gmtime_r(&t, &tm); }
+  char b[10];
+  if (clock24) snprintf(b, sizeof b, "%02d:%02d", tm.tm_hour, tm.tm_min);
+  else {
+    int h = tm.tm_hour % 12;
+    snprintf(b, sizeof b, "%d:%02d%c", h ? h : 12, tm.tm_min, tm.tm_hour < 12 ? 'a' : 'p');
+  }
+  return b;
+}
 static void loadMacros(JsonArrayConst arr, Macro* out, int& n) {
   n = 0;
   for (JsonVariantConst m : arr) {
@@ -346,6 +376,9 @@ static void loadConfig() {
   if (!conf.updateUrl.length()) conf.updateUrl = CS_UPDATE_URL;
 }
 
+#include "termfont.h"
+static const lgfx::GLCDfont termFont = { termfont_data, termfont_info, 6, 8, 7 };
+static const lgfx::IFont* uiFont() { return textStyle ? (const lgfx::IFont*)&termFont : (const lgfx::IFont*)&fonts::Font0; }
 #include "update.inc"   // update checks, rollback, notices (needs settings + helpers above)
 
 // ------------------------------------------------------------ BLE side ---
@@ -537,7 +570,8 @@ static void noteSession(JsonDocument& in, Session*& s) {
   if (proj.length()) s->project = proj;
   if (!s->project.length()) s->project = shortId(sid);
   s->lastSeen = millis();
-  if (!clockSet && in["now"].is<long>()) setClock(in["now"].as<long>(), in["tz"] | 0L);
+  if (!clockOk() && in["now"].is<long>()) setClock(in["now"].as<long>(), in["tz"] | 0L);
+  else if (!tzPosix.length() && in["tz"].is<long>()) tzOffset = in["tz"];   // follows the machine's daylight saving
 }
 
 // POST /event  {session, project, event, tool?, detail?, can_stop?, can_inject?, macros?}
@@ -1114,6 +1148,16 @@ static void textCommand(String line) {
     else tiltMode = 1;
     prefs.putChar("tilt", tiltMode);
     Serial.printf("ok tilt=%d\n", tiltMode);
+  } else if (line.startsWith("tz ")) {
+    String t = line.substring(3); t.trim();
+    if (!validTz(t)) { Serial.println("usage: tz <POSIX rule>, e.g. tz CST6CDT,M3.2.0,M11.1.0"); }
+    else { tzPosix = t; tzName = ""; prefs.putString("tz", tzPosix); prefs.putString("tzname", tzName); applyTimezone(); Serial.printf("ok tz=%s now=%s\n", tzPosix.c_str(), clockStr().c_str()); }
+  } else if (line.startsWith("font ")) {
+    textStyle = line.substring(5).toInt() ? 1 : 0; prefs.putUChar("font", textStyle);
+    Serial.printf("ok font=%s\n", textStyle ? "code" : "classic");
+  } else if (line.startsWith("clock ")) {
+    clock24 = line.substring(6).toInt() == 24; prefs.putBool("clk24", clock24);
+    Serial.printf("ok clock=%s now=%s\n", clock24 ? "24h" : "12h", clockStr().c_str());
   } else if (line == "flip") {
     flipped = !flipped; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1);
     Serial.printf("ok flip=%d\n", flipped);
@@ -1126,7 +1170,7 @@ static void textCommand(String line) {
     prefs.remove("ssid"); prefs.remove("pass"); prefs.putBool("setup", false); if (!safeMode) bleClearBonds();
     Serial.println("ok forgotten, rebooting"); delay(200); ESP.restart();
   } else {
-    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | info | setup | reboot | forget");
+    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | tz <rule> | clock 12|24 | font 0|1 | info | setup | reboot | forget");
   }
   dirty = true;
 }
@@ -1234,6 +1278,7 @@ static void hSetupInfo() {
   w["ssid"] = ssid; w["connected"] = WiFi.status() == WL_CONNECTED; w["ip"] = WiFi.localIP().toString();
   out["name"] = devName; out["bt"] = devName; out["buddy"] = buddySpeciesIdx();
   out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
+  out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24; out["clock"] = clockStr(); out["font"] = textStyle;
   JsonArray b = out["buddies"].to<JsonArray>();
   uint8_t cur = buddySpeciesIdx();
   for (uint8_t i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); b.add(buddySpeciesName()); }
@@ -1272,9 +1317,32 @@ static void hSetupPreview() {
   if (!setupAuthed()) return;
   JsonDocument in; if (!readBody(in)) return;
   buddySetSpeciesIdx(in["buddy"] | 0);
+  if (in["font"].is<int>()) { textStyle = in["font"].as<int>() ? 1 : 0; spr.setFont(uiFont()); }   // live preview; /setup/save keeps it
   heartUntil = millis() + 1500;
   touch();
   server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// POST /setup/time {tz?, tz_name?, clock24?, epoch?}: time zone and clock style.
+// "epoch" (the browser's clock) is only used when the Stick can't get the time elsewhere.
+static void hSetupTime() {
+  if (!setupAuthed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  if (in["tz"].is<const char*>()) {
+    String t = in["tz"].as<const char*>();
+    if (t.length() && !validTz(t)) { server.send(400, "application/json", "{\"error\":\"bad time zone\"}"); return; }
+    tzPosix = t;
+    tzName = String((const char*)(in["tz_name"] | "")).substring(0, 40);
+    prefs.putString("tz", tzPosix); prefs.putString("tzname", tzName);
+    applyTimezone();
+  }
+  if (in["clock24"].is<bool>()) { clock24 = in["clock24"]; prefs.putBool("clk24", clock24); }
+  long epoch = in["epoch"] | 0L;
+  if (epoch > 1700000000L && !clockOk()) setClock(epoch, 0);
+  JsonDocument out;
+  out["ok"] = true; out["clock"] = clockStr(); out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24;
+  sendJson(out);
+  dirty = true;
 }
 
 static void hSetupSave() {
@@ -1289,6 +1357,7 @@ static void hSetupSave() {
   buddySetSpeciesIdx(in["buddy"] | (int)buddySpeciesIdx()); prefs.putUChar("buddy", buddySpeciesIdx());
   volume = in["volume"] | (int)volume; prefs.putUChar("vol", volume); M5.Speaker.setVolume(volume);
   tiltMode = (in["tilt"] | true) ? 1 : 0; prefs.putChar("tilt", tiltMode);
+  if (in["font"].is<int>()) { textStyle = in["font"].as<int>() ? 1 : 0; prefs.putUChar("font", textStyle); }
   if (in["flip"].is<bool>()) { flipped = in["flip"]; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); }
   if (in["remote"].is<const char*>()) { String rm = in["remote"].as<const char*>(); conf.remote = rm == "off" ? 0 : rm == "on" ? 1 : 2; }
   else if (in["remote"].is<bool>()) conf.remote = in["remote"].as<bool>() ? 1 : 2;
@@ -1314,6 +1383,7 @@ static void registerSetupRoutes() {
   server.on("/setup/wifi", HTTP_POST, hSetupWifi);
   server.on("/setup/preview", HTTP_POST, hSetupPreview);
   server.on("/setup/save", HTTP_POST, hSetupSave);
+  server.on("/setup/time", HTTP_POST, hSetupTime);
   server.on("/install.py", HTTP_GET, hInstallPy);
   server.on("/claudestick_hook.py", HTTP_GET, hHookPy);
   server.onNotFound([] { server.send(404, "application/json", "{\"error\":\"not found\"}"); });
@@ -1390,13 +1460,41 @@ static int wrapLines(const String& text, int width, String* out, int maxOut,
   return n;
 }
 
+// ---- Wi-Fi signal: sampled once a second and smoothed, bars change with 2 dB of hysteresis
+
+static float wifiRssiAvg() {
+  static float avg = 0;
+  static uint32_t at = 0;
+  if (WiFi.status() != WL_CONNECTED) { avg = 0; return 0; }
+  if (!avg || millis() - at >= 1000) {
+    at = millis();
+    int r = WiFi.RSSI();
+    if (r < 0 && r > -127) avg = avg ? avg * 0.7f + r * 0.3f : (float)r;   // 0 / out-of-range = no reading, keep last
+  }
+  return avg;
+}
+
+// 0 = not connected, else 1..4: >= -55 dBm 4 bars, >= -65 3, >= -75 2, weaker 1.
+static int wifiBars() {
+  static int cur = 0;
+  float r = wifiRssiAvg();
+  if (r == 0) return cur = 0;
+  static const int T[3] = { -75, -65, -55 };   // threshold for 2, 3 and 4 bars
+  int want = 1;
+  for (int i = 0; i < 3; i++) if (r >= T[i]) want = i + 2;
+  if (!cur) cur = want;
+  else if (want > cur && r >= T[cur - 1] + 2) cur++;
+  else if (want < cur && r <= T[cur - 2] - 2) cur--;
+  return cur;
+}
+
 // ---- status bar icons: drawn from primitives, so they don't depend on font glyphs
 
-static void iconWifi(int x, int y, bool up, int rssi) {      // 11 x 8
-  int lit = !up ? 0 : rssi > -55 ? 4 : rssi > -65 ? 3 : rssi > -75 ? 2 : 1;
+static void iconWifi(int x, int y, int lit, float rssi) {      // 11 x 8
+  uint16_t on = lit == 1 ? (rssi < -82 ? C_BAD : C_YEL) : C_FG;
   for (int i = 0; i < 4; i++) {
     int h = 2 + i * 2;
-    spr.fillRect(x + i * 3, y + 8 - h, 2, h, i < lit ? (lit == 1 ? C_YEL : C_FG) : C_FRAME);
+    spr.fillRect(x + i * 3, y + 8 - h, 2, h, i < lit ? on : C_FRAME);
   }
 }
 
@@ -1421,7 +1519,6 @@ static void iconBattery(int x, int y, int pct, bool charging) {   // 18 x 8
 
 // Right end of the top border: wifi bars, bluetooth, battery, clock. Returns its width.
 static int statusBar(bool paint) {
-  bool up = WiFi.status() == WL_CONNECTED;
   int pct = M5.Power.getBatteryLevel();
   bool chg = (int)M5.Power.isCharging() == 1;
   String pctS = String(pct), clk = clockStr();
@@ -1433,7 +1530,7 @@ static int statusBar(bool paint) {
   if (chg) { put(3); int px = put(5); if (paint) { static const uint8_t bolt[5] = { 0x06, 0x0C, 0x0E, 0x06, 0x0C }; iconBitmap(px, 1, bolt, 5, 5, C_YEL); } }
   put(4);
   if (!safeMode) { int px = put(5); if (paint) iconBluetooth(px, 0, bleConnected()); put(4); }
-  { int px = put(11); if (paint) iconWifi(px, 0, up, up ? WiFi.RSSI() : -100); }
+  { int px = put(11); if (paint) iconWifi(px, 0, wifiBars(), wifiRssiAvg()); }
   return W - 5 - x;
 }
 
@@ -1477,7 +1574,9 @@ static void frame(const String& title, uint16_t accent, const String& hints, uin
 
 // Left pane: buddy, its name, and a one-word mood.
 static void buddyPane(uint8_t state, const char* mood, uint16_t moodColor) {
+  spr.setFont(&fonts::Font0);     // the buddy art was drawn for the classic glyphs
   buddyDraw(state);
+  spr.setFont(uiFont());
   String name = buddySpeciesName();
   txt(name, LEFT_W / 2 - spr.textWidth(name) / 2, 96, C_DIM);
   String m = mood;
@@ -1632,7 +1731,7 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
@@ -1643,6 +1742,8 @@ static int menuEntries(MenuEntry* e, String* labels) {
   add(MI_REMOTE, 0, String("remote: ") + remoteName(conf.remote) + (conf.remote == 2 ? (remoteMode ? " (on)" : " (off)") : ""));
   add(MI_TIE, 0, pinned.length() ? "tie to session (tied)" : "tie to session");
   add(MI_BUDDY, 0, String("buddy: ") + buddySpeciesName());
+  add(MI_FONT, 0, String("text: ") + (textStyle ? "code" : "classic"));
+  add(MI_CLOCK, 0, String("clock: ") + (clock24 ? "24-hour" : "12-hour"));
   add(MI_UPDATE, 0, upd.available ? "update to v" + upd.version : String("check for updates"));
   add(MI_FLIP, 0, "flip screen");
   add(MI_TEST, 0, "hardware test");
@@ -1720,7 +1821,7 @@ static void drawUpdatePrompt() {
 }
 
 static void drawUpdateProgress() {
-  spr.fillScreen(C_BG); spr.setFont(&fonts::Font0); spr.setTextSize(1);
+  spr.fillScreen(C_BG); spr.setFont(uiFont()); spr.setTextSize(1);
   frame("updating", C_OK, "don't unplug");
   txt("v" + String(FW_VERSION) + " -> v" + upd.version, PANE_X, TOP + 4, C_FG);
   int p = max(0, min(100, upd.progress));
@@ -1754,7 +1855,7 @@ static void drawVoiceCard() {
 
 static void drawVoiceRec(uint32_t ms) {
   spr.fillScreen(C_BG);
-  spr.setFont(&fonts::Font0); spr.setTextSize(1);
+  spr.setFont(uiFont()); spr.setTextSize(1);
   bool rec = voiceState == V_REC;
   frame(rec ? "listening" : "transcribing", C_CLAUDE, rec ? "release [A] to send" : "");
   if (rec) {
@@ -1802,6 +1903,7 @@ static void drawInfo() {
   kv("fw", FW_VERSION);
   kv("bt", devName);
   kv("wifi", ssid.length() ? ssid : String("(none)"), up ? C_OK : C_BAD);
+  kv("sig", up ? String((int)wifiRssiAvg()) + " dBm  " + String(wifiBars()) + "/4" : String("not connected"), up ? C_FG : C_BAD);
   kv("ip", WiFi.localIP().toString() + ":" + String(HTTP_PORT));
   kv("host", mdnsHost);
   kv("key", token, C_CLAUDE);
@@ -1835,6 +1937,7 @@ static void drawSetup() {
     line("http://" + WiFi.localIP().toString(), C_CLAUDE);
     line("  :" + String(HTTP_PORT) + "/setup", C_CLAUDE);
     y += 4;
+    line("set your time zone,", C_DIM);
     line("name it, pick a buddy,", C_DIM);
     line("get the install cmd", C_DIM);
   } else {
@@ -1974,7 +2077,7 @@ static void drawHome() {
 
 static void draw() {
   spr.fillScreen(C_BG);
-  spr.setFont(&fonts::Font0);
+  spr.setFont(uiFont());
   spr.setTextSize(1);
   const char* mood; uint16_t moodColor;
   uint8_t bs = buddyState(&mood, &moodColor);
@@ -2150,6 +2253,8 @@ static void buttons() {
       case MI_REMOTE: setRemoteSetting(conf.remote + 1); break;                       // stay in menu
       case MI_TIE:    screen = SCR_SESSIONS; menuIdx = 0; break;
       case MI_BUDDY:  prefs.putUChar("buddy", buddyNextSpecies()); break;            // stay in menu
+      case MI_FONT:   textStyle = textStyle ? 0 : 1; prefs.putUChar("font", textStyle); spr.setFont(uiFont()); break;   // stay in menu
+      case MI_CLOCK:  clock24 = !clock24; prefs.putBool("clk24", clock24); break;     // stay in menu
       case MI_HELP:   screen = SCR_HELP; menuIdx = 0; break;
       case MI_FLIP:   flipped = !flipped; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); break;
       case MI_TEST:   screen = SCR_TEST; menuIdx = 0; break;
@@ -2223,6 +2328,9 @@ void setup() {
   prefs.begin("cstick", false);
   bootGuard();                       // may switch back to the previous firmware and restart
   flipped = prefs.getBool("flip", false);
+  textStyle = prefs.getUChar("font", 1);
+  tzPosix = prefs.getString("tz", ""); tzName = prefs.getString("tzname", ""); clock24 = prefs.getBool("clk24", false);
+  applyTimezone();
   M5.Display.setRotation(flipped ? 3 : 1);
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON:  resetWhy = "power on"; break;
@@ -2290,6 +2398,7 @@ void loop() {
   expireStale();
   apTick();
   updateTick();
+  ntpTick();
   bootHealthTick();
   buttons();
   tiltTick();

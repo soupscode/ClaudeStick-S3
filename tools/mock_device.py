@@ -51,7 +51,7 @@ CONF = {"permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s":
 S = {"sessions": {}, "approvals": {}, "stops": {}, "next": 1, "log": [], "pinned": "",
      "last_stick": 0.0, "last_kbd": 0.0, "ota_bytes": 0}
 SETUP = {"done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
-         "buddy": 0, "volume": 120, "tilt": True}
+         "buddy": 0, "volume": 120, "tilt": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
 DEVICE_ID, MDNS_HOST = "a1b2c3d4e5f6", "claudestick-e5f6.local"
 
 
@@ -182,7 +182,7 @@ class H(BaseHTTPRequestHandler):
         p, q = urlparse(self.path).path, self.q()
         if p == "/health":
             hook = hashlib.sha256(open(os.path.join(_REPO, "hooks/claudestick_hook.py"), "rb").read()).hexdigest()
-            return self.reply({"ok": True, "fw": "0.7.1", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
+            return self.reply({"ok": True, "fw": "0.7.2", "name": SETUP["name"], "id": DEVICE_ID, "host": MDNS_HOST,
                                "hook": hook, "auth": bool(TOKEN)})
         if p == "/":
             return self.reply(INDEX_HTML, ctype="text/html; charset=utf-8")
@@ -195,7 +195,9 @@ class H(BaseHTTPRequestHandler):
             if not self.setup_auth():
                 return
             if p == "/setup/info":
-                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.5.0", "port": self.server.server_port,
+                return self.reply({"done": SETUP["done"], "ap": SETUP["ap"], "fw": "0.7.2", "port": self.server.server_port,
+                                   "tz": SETUP["tz"], "tz_name": SETUP["tz_name"], "clock24": SETUP["clock24"],
+                                   "clock": SETUP.get("clock", ""), "font": SETUP["font"],
                                    "wifi": {"ssid": SETUP["ssid"], "connected": SETUP["connected"], "ip": SETUP["ip"]},
                                    "name": SETUP["name"], "bt": SETUP["name"], "buddy": SETUP["buddy"],
                                    "volume": SETUP["volume"], "tilt": SETUP["tilt"], "remote": CONF["remote"],
@@ -268,8 +270,22 @@ class H(BaseHTTPRequestHandler):
                 return self.reply({"ok": True})
             if p == "/setup/preview":
                 SETUP["buddy"] = b.get("buddy", 0)
+                if isinstance(b.get("font"), int):
+                    SETUP["font"] = b["font"]
                 print(f"[preview] buddy -> {BUDDIES[SETUP['buddy']]}")
                 return self.reply({"ok": True})
+            if p == "/setup/time":
+                tz = b.get("tz")
+                if isinstance(tz, str):
+                    if tz and not re.fullmatch(r"[A-Za-z0-9,.:/+<>-]{1,63}", tz):
+                        return self.reply({"error": "bad time zone"}, 400)
+                    SETUP["tz"], SETUP["tz_name"] = tz, str(b.get("tz_name", ""))[:40]
+                if isinstance(b.get("clock24"), bool):
+                    SETUP["clock24"] = b["clock24"]
+                SETUP["clock"] = "8:59p" if not SETUP["clock24"] else "20:59"
+                SETUP["epoch"] = b.get("epoch")
+                return self.reply({"ok": True, "clock": SETUP["clock"], "tz": SETUP["tz"], "tz_name": SETUP["tz_name"],
+                                   "clock24": SETUP["clock24"]})
             if p == "/setup/save":
                 name = (b.get("name") or SETUP["name"]).strip()
                 if not name.startswith("Claude"):
@@ -277,6 +293,8 @@ class H(BaseHTTPRequestHandler):
                 restart = name != SETUP["name"]
                 SETUP.update(name=name[:24], buddy=b.get("buddy", 0), volume=b.get("volume", 120),
                              tilt=bool(b.get("tilt")), done=True)
+                if isinstance(b.get("font"), int):
+                    SETUP["font"] = b["font"]
                 if isinstance(b.get("remote"), str):
                     CONF["remote"] = b["remote"]
                 return self.reply({"ok": True, "restart": restart, "token": TOKEN, "bt": SETUP["name"],

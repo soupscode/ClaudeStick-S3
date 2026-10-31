@@ -15,12 +15,19 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <label>password</label><input id=pw type=password>
 <button onclick=joinWifi()>connect</button></div><div id=wmsg class=d></div></div>
 
+<div class="c hide" id=time><div class=t>time zone &amp; clock</div>
+<div class=d>For the clock on the Stick. It sets itself over the internet; if your network has none, this page sets it for you.</div>
+<label>time zone <span class=d id=tzdet></span></label><select id=tz></select>
+<div class=row><input type=checkbox id=c12 checked><label for=c12>12-hour clock (shows 8:59p)</label></div>
+<button onclick="saveTime()">save time</button><span id=tmsg class=d></span></div>
+
 <div class="c hide" id=me><div class=t>you &amp; your stick</div>
 <label>stick name (shows in Claude desktop's Bluetooth list)</label><input id=name maxlength=20>
 <label>buddy <span class=d>(watch the Stick, it previews live)</span></label><select id=buddy onchange=preview()></select>
 <label>sound volume</label><input type=range id=vol min=0 max=255>
 <div class=row><input type=checkbox id=tilt><label for=tilt>tilt to scroll long text</label></div>
 <div class=row><input type=checkbox id=flip><label for=flip>flip screen 180&deg; (if it's upside down)</label></div>
+<label>text style <span class=d>(the Stick previews it live)</span></label><select id=font onchange=preview()><option value=1>code: slashed zero, cleaner punctuation</option><option value=0>classic</option></select>
 <label>remote mode</label><select id=remote><option value=auto>auto: follows where you last answered (recommended)</option><option value=on>always on</option><option value=off>always off</option></select>
 <button onclick=save()>save</button><span id=smsg class=d></span></div>
 
@@ -64,20 +71,77 @@ let T=new URLSearchParams(location.search).get('t')||'';let I={},C={};
 const $=id=>document.getElementById(id);
 const q=p=>p+(T?(p.includes('?')?'&':'?')+'t='+T:'');
 async function api(p,b){const r=await fetch(q(p),{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});if(!r.ok)throw new Error(await r.text());return r.json()}
+// [label, IANA id, POSIX rule (knows daylight saving), other IANA ids that share the rule]
+const Z=[
+['Honolulu (Hawaii)','Pacific/Honolulu','HST10'],
+['Anchorage (Alaska)','America/Anchorage','AKST9AKDT,M3.2.0,M11.1.0'],
+['Los Angeles, Vancouver (Pacific)','America/Los_Angeles','PST8PDT,M3.2.0,M11.1.0',['America/Vancouver','America/Tijuana']],
+['Phoenix (Arizona, no daylight saving)','America/Phoenix','MST7'],
+['Denver, Calgary (Mountain)','America/Denver','MST7MDT,M3.2.0,M11.1.0',['America/Edmonton','America/Boise']],
+['Chicago, Dallas, Winnipeg (Central)','America/Chicago','CST6CDT,M3.2.0,M11.1.0',['America/Winnipeg','America/Indiana/Knox','America/Menominee','America/North_Dakota/Center']],
+['New York, Toronto (Eastern)','America/New_York','EST5EDT,M3.2.0,M11.1.0',['America/Toronto','America/Detroit','America/Indiana/Indianapolis','America/Kentucky/Louisville']],
+['Halifax (Atlantic)','America/Halifax','AST4ADT,M3.2.0,M11.1.0'],
+['St. John\'s (Newfoundland)','America/St_Johns','NST3:30NDT,M3.2.0,M11.1.0'],
+['Mexico City','America/Mexico_City','CST6'],
+['Bogota, Lima','America/Bogota','<-05>5',['America/Lima','America/Guayaquil']],
+['Sao Paulo','America/Sao_Paulo','<-03>3'],
+['Buenos Aires','America/Argentina/Buenos_Aires','<-03>3',['America/Buenos_Aires']],
+['Santiago','America/Santiago','<-04>4<-03>,M9.1.6/24,M4.1.6/24'],
+['UTC','UTC','UTC0',['Etc/UTC','Etc/GMT']],
+['London (UK)','Europe/London','GMT0BST,M3.5.0/1,M10.5.0'],
+['Dublin','Europe/Dublin','GMT0IST,M3.5.0/1,M10.5.0'],
+['Lisbon','Europe/Lisbon','WET0WEST,M3.5.0/1,M10.5.0'],
+['Paris, Berlin, Madrid, Rome (Central Europe)','Europe/Paris','CET-1CEST,M3.5.0,M10.5.0/3',['Europe/Berlin','Europe/Madrid','Europe/Rome','Europe/Amsterdam','Europe/Brussels','Europe/Vienna','Europe/Zurich','Europe/Stockholm','Europe/Oslo','Europe/Copenhagen','Europe/Prague','Europe/Warsaw','Europe/Budapest']],
+['Athens, Helsinki, Kyiv (Eastern Europe)','Europe/Athens','EET-2EEST,M3.5.0/3,M10.5.0/4',['Europe/Helsinki','Europe/Kiev','Europe/Kyiv','Europe/Bucharest','Europe/Riga','Europe/Vilnius','Europe/Tallinn']],
+['Istanbul, Riyadh','Europe/Istanbul','<+03>-3',['Asia/Riyadh','Asia/Baghdad','Asia/Kuwait','Africa/Nairobi']],
+['Moscow','Europe/Moscow','MSK-3'],
+['Cairo','Africa/Cairo','EET-2EEST,M4.5.5/0,M10.5.4/24'],
+['Johannesburg','Africa/Johannesburg','SAST-2'],
+['Lagos','Africa/Lagos','WAT-1'],
+['Jerusalem','Asia/Jerusalem','IST-2IDT,M3.4.4/26,M10.5.0'],
+['Tehran','Asia/Tehran','<+0330>-3:30'],
+['Dubai','Asia/Dubai','<+04>-4'],
+['Karachi','Asia/Karachi','PKT-5'],
+['Kolkata, Mumbai (India)','Asia/Kolkata','IST-5:30',['Asia/Calcutta']],
+['Kathmandu','Asia/Kathmandu','<+0545>-5:45'],
+['Dhaka','Asia/Dhaka','<+06>-6'],
+['Bangkok, Jakarta, Ho Chi Minh','Asia/Bangkok','<+07>-7',['Asia/Jakarta','Asia/Ho_Chi_Minh','Asia/Saigon']],
+['Singapore, Kuala Lumpur','Asia/Singapore','<+08>-8',['Asia/Kuala_Lumpur']],
+['Shanghai, Hong Kong, Taipei, Manila','Asia/Shanghai','CST-8',['Asia/Hong_Kong','Asia/Taipei','Asia/Manila','Asia/Macau']],
+['Perth','Australia/Perth','AWST-8'],
+['Tokyo','Asia/Tokyo','JST-9'],
+['Seoul','Asia/Seoul','KST-9'],
+['Adelaide','Australia/Adelaide','ACST-9:30ACDT,M10.1.0,M4.1.0/3'],
+['Darwin','Australia/Darwin','ACST-9:30'],
+['Brisbane','Australia/Brisbane','AEST-10'],
+['Sydney, Melbourne','Australia/Sydney','AEST-10AEDT,M10.1.0,M4.1.0/3',['Australia/Melbourne','Australia/Canberra','Australia/Hobart']],
+['Auckland','Pacific/Auckland','NZST-12NZDT,M9.5.0,M4.1.0/3']];
+// a plain UTC offset (no daylight saving) as a POSIX rule: +330 min -> <+0530>-5:30
+function fixedTz(m){const a=Math.abs(m),h=Math.floor(a/60),mi=a%60,hh=String(h).padStart(2,'0'),mm=String(mi).padStart(2,'0');return '<'+(m<0?'-':'+')+hh+(mi?mm:'')+'>'+(m<0?'':'-')+h+(mi?':'+mm:'')}
+const offMin=-new Date().getTimezoneOffset();
+const fixedLabel='UTC'+(offMin<0?'-':'+')+String(Math.floor(Math.abs(offMin)/60)).padStart(2,'0')+':'+String(Math.abs(offMin)%60).padStart(2,'0');
+let browserTz='';try{browserTz=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}
+const detected=Z.findIndex(z=>z[1]==browserTz||(z[3]||[]).includes(browserTz));
+function fillTz(){$('tz').innerHTML=Z.map((z,i)=>`<option value=${i}>${z[0]}</option>`).join('')+`<option value=-1>fixed ${fixedLabel} (this browser, no daylight saving)</option>`;
+$('tzdet').textContent=detected>=0?'(detected: '+browserTz+')':browserTz?'(your browser says '+browserTz+')':''}
+function pickTz(){let i=detected;if(I.tz_name){const k=Z.findIndex(z=>z[1]==I.tz_name);i=k>=0?k:(I.tz?-1:i)}$('tz').value=i;$('c12').checked=!I.clock24}
+async function saveTime(quiet){const i=+$('tz').value,z=Z[i];const body={tz:z?z[2]:fixedTz(offMin),tz_name:z?z[1]:fixedLabel,clock24:!$('c12').checked,epoch:Math.floor(Date.now()/1000)};
+try{const r=await api('/setup/time',body);I.tz=r.tz;I.tz_name=r.tz_name;I.clock24=r.clock24;if(!quiet)$('tmsg').innerHTML=' <span class=ok>saved'+(r.clock?' · the Stick shows '+r.clock:'')+'</span>'}catch(e){if(!quiet)$('tmsg').innerHTML=' <span class=bad>could not save</span>'}}
 async function load(){try{I=await api('/setup/info')}catch(e){$('hello').textContent='setup is finished. open this page with ?t=<token> to change settings.';return}
 if(!T&&I.token&&I.done)T=I.token;
 $('hello').textContent=(I.done?'settings':'first-time setup')+' · fw '+I.fw;
 $('wifi').classList.toggle('hide',I.wifi.connected&&!I.ap);$('wform').classList.toggle('hide',I.wifi.connected);
 if(I.wifi.connected){$('wmsg').innerHTML='<span class=ok>connected to '+I.wifi.ssid+' as '+I.wifi.ip+'</span>'+(I.ap?'<br>switch your phone back to your home Wi-Fi, then open <b>http://'+I.wifi.ip+':'+I.port+'/setup</b> to finish.':'')}
-$('me').classList.toggle('hide',!I.wifi.connected&&!I.done);
-$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('remote').value=I.remote;
+$('me').classList.toggle('hide',!I.wifi.connected&&!I.done);$('time').classList.toggle('hide',!I.wifi.connected&&!I.done);
+if(!$('tz').options.length)fillTz();pickTz();if(I.wifi.connected&&!I.tz_name&&!I.tz&&!I.done)saveTime(true);
+$('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('remote').value=I.remote;
 $('buddy').innerHTML=I.buddies.map((b,i)=>`<option value=${i}>${b}</option>`).join('');$('buddy').value=I.buddy;
 if(I.done){T=T||I.token;show(I);loadConf()}if(I.ap&&!I.wifi.connected)scan()}
 async function scan(){$('ssid').innerHTML='<option>scanning…</option>';try{const n=await api('/setup/scan');$('ssid').innerHTML=n.map(x=>`<option>${x.ssid.replace(/</g,'&lt;')}</option>`).join('')}catch(e){$('ssid').innerHTML=''}}
 async function joinWifi(){const s=$('ssid2').value||$('ssid').value;$('wmsg').textContent='connecting to '+s+'…';await api('/setup/wifi',{ssid:s,pass:$('pw').value});
 for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,1000));try{I=await api('/setup/info');if(I.wifi.connected)return load()}catch(e){}}$('wmsg').innerHTML='<span class=bad>could not connect. check the password (2.4 GHz only).</span>'}
-function preview(){api('/setup/preview',{buddy:+$('buddy').value})}
-async function save(){const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,remote:$('remote').value});
+function preview(){api('/setup/preview',{buddy:+$('buddy').value,font:+$('font').value})}
+async function save(){await saveTime(true);const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,font:+$('font').value,remote:$('remote').value});
 $('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to apply the new name':'')+'</span>';T=r.token;show(r);loadConf()}
 function show(r){const h=r.ip||I.wifi.ip,p=r.port||I.port,t=r.token||T;$('done').classList.remove('hide');
 $('cmd').textContent=`curl -s http://${h}:${p}/install.py | python3 - --host ${h} --port ${p} --token ${t}`;

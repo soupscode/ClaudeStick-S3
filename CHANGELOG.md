@@ -2,6 +2,13 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.7.2
+- Clock shows 12-hour time (8:59p); 24-hour optional
+- Time zone step in setup, detected from your browser
+- Clock sets itself over the internet and follows daylight saving
+- Wi-Fi bars now smoothed (no flicker)
+- New "code" text style (slashed zero, cleaner punctuation)
+
 ## 0.7.1
 - New status bar: Wi-Fi bars, Bluetooth, battery gauge, clock
 - Key-cap hints along the bottom

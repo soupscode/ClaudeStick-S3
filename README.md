@@ -66,7 +66,9 @@ On cards and Home, hold A is **talk**; double-press A is the deliberate "yes".
 
   Edit approvals show a red/green diff.
 - **Tilt to scroll:** tip the Stick forward or back on long commands. Use the serial command `tilt flip` or `tilt off` if it feels wrong.
-- **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy · button help · info · new token (hold A) · re-run setup.
+- **Menu:** stop now · your macros · remote (auto/on/off) · tie to session · buddy · text style (code/classic) · clock (12/24-hour) · button help · info · new token (hold A) · re-run setup.
+- **Wi-Fi bars:** 4 bars at -55 dBm or better, 3 to -65, 2 to -75, otherwise 1 (red below -82). The reading is sampled once a second and smoothed, and bars change with a little hysteresis so they don't flicker. **Menu → info** shows the dBm.
+- **Text style:** *code* (default) keeps the same 6x8 cell as *classic* but has a slashed zero, distinct `1`/`l`/`I` and cleaner punctuation. The art is in `tools/gen_font.py`.
 
 ### Session details: to-do list and tokens
 
@@ -105,7 +107,7 @@ Every terminal with the hooks installed shows up on Home, named `folder@branch` 
 5. **Title says `claudestick:safe`?** Bluetooth was turned off because the Stick crashed on boot. Open *Logs & Console* from the flasher page (no tools needed) and send me what it prints, plus the "last reset" line from the hardware test.
 6. Run the install command on your machines, then trigger a Claude Code approval to test it end to end.
 
-*Logs & Console* in the flasher dialog doubles as the serial terminal: `info`, `flip`, `tilt flip`, `wifi <ssid> <pass>`.
+*Logs & Console* in the flasher dialog doubles as the serial terminal: `info`, `flip`, `tilt flip`, `wifi <ssid> <pass>`, `tz <POSIX rule>`, `clock 12|24`, `font 0|1`.
 
 ## Setup
 
@@ -128,9 +130,10 @@ No computer? A fresh Stick opens a hotspot named `ClaudeStick-XXXX`. Join it fro
 
 `http://<stick-ip>:7880/setup` covers:
 
+- **Time zone & clock:** your browser's zone is detected and applied automatically (change it from the list if it's wrong). The Stick sets its clock over the internet, follows daylight saving by itself, and shows 12-hour time (`8:59p`); untick the box for 24-hour. With no internet on the Stick's network, this page sets the clock for you.
 - **Name:** shows in Claude desktop's Bluetooth list, always prefixed `Claude-`.
 - **Buddy:** previews live on the Stick as you pick.
-- **Settings:** volume, tilt, and whether to start in remote mode.
+- **Settings:** text style, volume, tilt, and whether to start in remote mode.
 
 The last step prints, with your IP and token filled in:
 

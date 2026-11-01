@@ -9,6 +9,8 @@ static std::string OUTP; void M5Canvas::pushSprite(int,int){
   if (OUTP.empty()) return; FILE* f=fopen(OUTP.c_str(),"wb"); fprintf(f,"P6 %d %d 255\n",w,h);
   for(int i=0;i<w*h;i++){uint16_t c=fb[i]; unsigned char rgb[3]={(unsigned char)(((c>>11)&31)*255/31),(unsigned char)(((c>>5)&63)*255/63),(unsigned char)((c&31)*255/31)}; fwrite(rgb,1,3,f);} fclose(f); }
 static void shot(const char* n){ OUTP = std::string("out/") + n + ".ppm"; draw(); OUTP.clear(); }
+static std::string bump(int by) { int a = 0, b = 0, c = 0; sscanf(FW_VERSION, "%d.%d.%d", &a, &b, &c); return std::to_string(a) + "." + std::to_string(b) + "." + std::to_string(c + by); }
+
 int main() {
   // ---- boot guard: two failed boots, then rollback on the third
   PREFS.clear(); RESTARTS = 0;
@@ -28,10 +30,10 @@ int main() {
   PREFS.clear(); PREFS["setup"] = "1"; PREFS["ssid"] = "home-wifi";
   NOW = 100000; setup(); RESTARTS = 0; WiFi.st = WL_CONNECTED;
   conf.updateUrl = "https://example.github.io/app/";
-  HTTP_BODY = "{\"version\":\"0.9.5\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Tilt fix\\n- Louder approval chime\\n- Battery: screen sleeps sooner\"}";
+  HTTP_BODY = "{\"version\":\"" + bump(1) + "\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Tilt fix\\n- Louder approval chime\\n- Battery: screen sleeps sooner\"}";
   checkForUpdate(false);
   check("fetches ota.json from the update URL", LAST_URL == "https://example.github.io/app/ota.json", LAST_URL);
-  check("newer version -> prompt due", upd.available && updatePromptDue() && upd.version == "0.9.5");
+  check("newer version -> prompt due", upd.available && updatePromptDue() && std::string(upd.version.c_str()) == bump(1));
   shot("23_update_prompt");
   // remind me later
   menuIdx = 1; M5.BtnA.c = true; buttons(); M5.BtnA.c = false;
@@ -40,10 +42,10 @@ int main() {
   check("...and it returns after 24 h", updatePromptDue());
   // skip this version
   menuIdx = 2; M5.BtnA.c = true; buttons(); M5.BtnA.c = false;
-  check("skip this version", !upd.available && PREFS["skipver"] == "0.9.5");
+  check("skip this version", !upd.available && PREFS["skipver"] == bump(1));
   checkForUpdate(false); check("skipped version not offered again", !upd.available);
-  HTTP_BODY = "{\"version\":\"0.9.6\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Fix\"}";
-  checkForUpdate(false); check("a newer version is offered again", upd.available && upd.version == "0.9.6");
+  HTTP_BODY = "{\"version\":\"" + bump(2) + "\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Fix\"}";
+  checkForUpdate(false); check("a newer version is offered again", upd.available && std::string(upd.version.c_str()) == bump(2));
   // same version manual check
   HTTP_BODY = std::string("{\"version\":\"") + FW_VERSION + "\"}"; upd.available = false;
   checkForUpdate(true); check("manual check: up to date notice", !upd.available && noticeText.startsWith("up to date"), noticeText.c_str());
@@ -51,13 +53,13 @@ int main() {
   HTTP_CODE = 404; checkForUpdate(true); check("manual check: unreachable notice", noticeText.indexOf("couldn't reach") >= 0, noticeText.c_str());
   HTTP_CODE = 200; noticeUntil = 0;
   // install
-  HTTP_BODY = "{\"version\":\"0.9.6\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Fix\"}"; checkForUpdate(false);
+  HTTP_BODY = "{\"version\":\"" + bump(2) + "\",\"app\":\"firmware/claudestick-app.bin\",\"notes\":\"- Fix\"}"; checkForUpdate(false);
   menuIdx = 0; M5.BtnA.c = true;
   OUTP = "out/24_update_progress.ppm";   // last progress frame lands here
   buttons(); M5.BtnA.c = false; OUTP.clear();
   check("downloads the app image", UPDATE_URL == "https://example.github.io/app/firmware/claudestick-app.bin", UPDATE_URL);
   check("progress reaches 100 and a restart is scheduled", upd.progress == 100 && restartAt > 0);
-  check("remembers which version it's moving to", PREFS["upd_to"] == "0.9.6");
+  check("remembers which version it's moving to", PREFS["upd_to"] == bump(2));
   // failed install
   upd.progress = -1; restartAt = 0; UPDATE_RESULT = HTTP_UPDATE_FAILED; installUpdate();
   check("failed install shows a notice, no restart", restartAt == 0 && noticeTitle == "update failed");

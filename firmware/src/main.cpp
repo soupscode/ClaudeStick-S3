@@ -51,7 +51,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.4";
+static const char*    FW_VERSION   = "0.9.5";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -90,7 +90,12 @@ struct Session {
   bool     bridge = false;
   uint8_t  gen = 0;
   uint16_t planDone = 0;
+  String   queued;             // bridge sessions: the message the bridge is holding for Claude's next step
+  uint32_t activeAt = 0;       // bridge sessions: when the hook last reported anything (lastSeen is the last poll, the same for all)
 };
+// The message waiting for Claude's next step: held here for a direct hook, on the bridge for a bridge session.
+static const String& queuedText(const Session& s) { return s.bridge ? s.queued : s.inject; }
+static uint32_t activeOf(const Session& s) { return s.bridge ? s.activeAt : s.lastSeen; }
 
 // Plan limits are account-wide: the 5-hour and 7-day windows (Pro/Max), with reset times.
 struct Limit { float pct = -1; uint32_t resets = 0; };
@@ -206,6 +211,7 @@ static uint32_t heartUntil = 0;  // buddy shows a heart briefly after an approva
 static int      scrollLine = 0;  // first visible line of long card text
 static uint32_t scrollKey = 0;   // which card the scroll belongs to
 static int8_t   tiltMode = 1;    // 1 normal, -1 flipped, 0 off
+static bool     wakeMotion = true;   // wake the dimmed screen when the Stick is picked up
 static String   answeredBleId;   // ignore the prompt we just answered until the desktop clears it
 
 // --------------------------------------------------------------- helpers ---
@@ -248,7 +254,7 @@ static Session* findSession(const String& id, bool create) {
 static Session* targetSession() {
   if (focusSession >= 0 && sessions[focusSession].used) return &sessions[focusSession];
   Session* best = nullptr;
-  for (auto& s : sessions) if (s.used && (!best || s.lastSeen > best->lastSeen)) best = &s;
+  for (auto& s : sessions) if (s.used && (!best || (int32_t)(activeOf(s) - activeOf(*best)) > 0)) best = &s;
   return best;
 }
 
@@ -875,6 +881,7 @@ static void hState() {
   for (auto& s : sessions) if (s.used) {
     JsonObject o = ss.add<JsonObject>();
     o["id"] = s.id; o["project"] = s.project; o["state"] = s.state; o["detail"] = s.detail;
+    if (queuedText(s).length()) o["queued"] = queuedText(s).substring(0, 60);
     if (s.todoTotal) {
       JsonObject t = o["todo"].to<JsonObject>();
       t["done"] = s.todoDone; t["total"] = s.todoTotal; t["now"] = s.todoNow; t["skip"] = s.todoSkip;
@@ -936,6 +943,15 @@ static bool deliverText(Session* s, const String& text) {
   return true;
 }
 
+// Take back a message that is still waiting for Claude's next step.
+static bool unqueue(Session* s) {
+  if (!s) return false;
+  if (s->bridge) return bridgeSessionAct(s, "unsend");
+  if (!s->inject.length()) return false;
+  s->inject = "";
+  return true;
+}
+
 // Answer a Done/Question card: here (the hook polls for it) or on the bridge it came from.
 static bool stopResult(StopReq* r, int result) {
   if (r->bridge) { if (!bridgeStopResult(r, result)) return false; r->used = false; }
@@ -980,12 +996,13 @@ static void hAct() {
     else if (action == "dismiss") ok = stopResult(r, -2);
     else if (index >= 0 && index < r->nMacros) ok = stopResult(r, index);
     else ok = false;
-  } else if (action == "say" || action == "macro" || action == "stop") {
+  } else if (action == "say" || action == "macro" || action == "stop" || action == "unsend") {
     Session* s = sid.length() ? findSession(sid, false) : targetSession();
     String text = action == "say" ? String((const char*)(in["text"] | "")) :
                   (action == "macro" && index >= 0 && index < nMacros) ? macros[index].text : String();
     if (!s) ok = false;
     else if (action == "stop") ok = sessionStop(s);
+    else if (action == "unsend") ok = unqueue(s);
     else { if (action == "macro") tel.macroTaps++; ok = deliverText(s, text); }
   } else if (action == "pin") {
     pinned = sid.length() && findSession(sid, false) ? sid : String();
@@ -1210,7 +1227,7 @@ static void wifiTick() {
 //  * Improv Wi-Fi Serial (binary packets starting "IMPROV"): used by the web
 //    flasher to send Wi-Fi credentials right after flashing.
 //  * Plain text commands, one per line:
-//      wifi <ssid> <password> | token <value> | name <value> | tilt on|off|flip
+//      wifi <ssid> <password> | token <value> | name <value> | tilt on|off|flip | wake on|off
 //      info | setup (re-run first-time setup) | reboot | forget
 
 static const uint8_t IMPROV_STATE_READY = 0x02, IMPROV_STATE_PROVISIONING = 0x03, IMPROV_STATE_PROVISIONED = 0x04;
@@ -1333,6 +1350,11 @@ static void textCommand(String line) {
     else tiltMode = 1;
     prefs.putChar("tilt", tiltMode);
     Serial.printf("ok tilt=%d\n", tiltMode);
+  } else if (line.startsWith("wake ")) {
+    String m = line.substring(5); m.trim();
+    wakeMotion = m != "off";
+    prefs.putBool("wakem", wakeMotion);
+    Serial.printf("ok wake=%s\n", wakeMotion ? "on" : "off");
   } else if (line.startsWith("tz ")) {
     String t = line.substring(3); t.trim();
     if (!validTz(t)) { Serial.println("usage: tz <POSIX rule>, e.g. tz CST6CDT,M3.2.0,M11.1.0"); }
@@ -1363,7 +1385,7 @@ static void textCommand(String line) {
     forgetAllNets(); prefs.putBool("setup", false); if (!btOff()) bleClearBonds();
     Serial.println("ok forgotten, rebooting"); delay(200); ESP.restart();
   } else {
-    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | flip | tz <rule> | clock 12|24 | font 0|1 | bat | sleep max|min | info | setup | reboot | forget");
+    Serial.println("commands: wifi <ssid> <pass> | token <t> | name <n> | tilt on|off|flip | wake on|off | flip | tz <rule> | clock 12|24 | font 0|1 | bat | sleep max|min | info | setup | reboot | forget");
   }
   dirty = true;
 }
@@ -1475,7 +1497,7 @@ static void hSetupInfo() {
   br["url"] = bridgeUrl; br["set"] = bridgeConfigured(); br["up"] = bridgeUp; br["error"] = bridgeUp ? "" : bridgeErr;
   out["name"] = devName; out["bt"] = devName; out["buddy"] = buddySpeciesIdx();
   out["bt_on"] = btPref;
-  out["volume"] = volume; out["tilt"] = tiltMode != 0; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
+  out["volume"] = volume; out["tilt"] = tiltMode != 0; out["wake"] = wakeMotion; out["remote"] = remoteName(conf.remote); out["flip"] = flipped;
   out["tz"] = tzPosix; out["tz_name"] = tzName; out["clock24"] = clock24; out["clock"] = clockStr(); out["font"] = textStyle;
   out["telemetry_available"] = conf.telemetryUrl.length() > 0; out["telemetry"] = conf.telemetryOn;
   JsonArray b = out["buddies"].to<JsonArray>();
@@ -1629,6 +1651,7 @@ static void hSetupSave() {
   buddySetSpeciesIdx(in["buddy"] | (int)buddySpeciesIdx()); prefs.putUChar("buddy", buddySpeciesIdx());
   volume = in["volume"] | (int)volume; prefs.putUChar("vol", volume); M5.Speaker.setVolume(volume);
   tiltMode = (in["tilt"] | true) ? 1 : 0; prefs.putChar("tilt", tiltMode);
+  if (in["wake"].is<bool>()) { wakeMotion = in["wake"]; prefs.putBool("wakem", wakeMotion); }
   if (in["font"].is<int>()) { textStyle = in["font"].as<int>() ? 1 : 0; prefs.putUChar("font", textStyle); }
   if (in["flip"].is<bool>()) { flipped = in["flip"]; prefs.putBool("flip", flipped); M5.Display.setRotation(flipped ? 3 : 1); }
   if (in["bt"].is<bool>() && in["bt"].as<bool>() != btPref) { btPref = in["bt"]; prefs.putBool("bt", btPref); restart = true; }   // Bluetooth starts at boot
@@ -2116,13 +2139,14 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
   int n = 0;
   auto add = [&](MenuItem k, int arg, const String& l) { e[n] = { k, arg }; labels[n] = l; n++; };
   add(MI_STOP, 0, "stop now");
+  { Session* qs = targetSession(); if (qs && queuedText(*qs).length()) add(MI_UNQUEUE, 0, "cancel queued msg"); }
   { Session* ts = targetSession(); bool br = ts && ts->bridge;   // a bridge session uses the bridge's macros
     for (int i = 0, m = br ? nBridgeMacro : nMacros; i < m; i++) add(MI_MACRO, i, "> " + (br ? bridgeMacro[i] : macros[i].label)); }
   add(MI_REMOTE, 0, String("remote: ") + remoteName(conf.remote) + (conf.remote == 2 ? (remoteMode ? " (on)" : " (off)") : ""));
@@ -2238,7 +2262,10 @@ static void drawVoiceCard() {
         voiceApproval ? C_BAD : C_CLAUDE, "[A] send  [B] discard  [hold A] redo");
   txt("@" + fit(s ? sessionLabel(*s) : String("?"), charsAt(TOP + 2) - 1), PANE_X, TOP + 2, C_DIM);
   hrule(TOP + 2 + LINE_H);
-  textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H, 10, C_FG, true);
+  // Claude Code only runs hooks while it works: an idle session sees this on its next step, not before.
+  bool idle = s && !voiceApproval && !voiceStopReq && (s->state == "done" || s->state == "ready");
+  if (idle) txt(fit("idle: it sees this on its next step", charsAt(TOP + 6 + LINE_H)), PANE_X, TOP + 6 + LINE_H, C_CLAUDE);
+  textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H * (idle ? 2 : 1), idle ? 9 : 10, C_FG, true);
 }
 
 static void drawVoiceRec(uint32_t ms) {
@@ -2475,8 +2502,9 @@ static void drawHome() {
       static const char SPIN[] = "|/-\\";
       txt(String(SPIN[(now / 200) % 4]), PANE_X, y, sc);
     } else spr.fillRect(PANE_X, y + 1, 4, 6, sc);
-    String st = s.stopFlag ? "stop.." : s.inject.length() ? "msg.." : s.state;
-    if (!s.stopFlag && !s.inject.length() && (active || s.state == "done") && now - s.stateSince >= 3000)
+    const bool queued = queuedText(s).length() > 0;
+    String st = s.stopFlag ? "stop.." : queued ? "msg.." : s.state;
+    if (!s.stopFlag && !queued && (active || s.state == "done") && now - s.stateSince >= 3000)
       st += " " + fmtAge(now - s.stateSince);
     String head = sessionLabel(s);
     if (pinned == s.id) head = "*" + head;
@@ -2485,7 +2513,7 @@ static void drawHome() {
     txt(st, rightX(y) - spr.textWidth(st), y, sc);
     if (isT) spr.drawFastHLine(PANE_X + 7, y + 8, spr.textWidth(head), C_CLAUDE);
     y += LINE_H;
-    if (y <= limitY && (s.detail.length() || s.todoTotal)) {
+    if (y <= limitY && (s.detail.length() || s.todoTotal || queued)) {
       int x = PANE_X + 12, room2 = (rightX(y) - x) / 6;
       String d = s.detail;
       if (s.todoTotal) {
@@ -2494,7 +2522,8 @@ static void drawHome() {
         x += spr.textWidth(pr) + 6; room2 = (rightX(y) - x) / 6;
         if (s.todoNow.length() && s.state != "done") d = s.todoNow;
       }
-      txt(fit(d, room2), x, y, C_DIM);
+      if (queued) d = "queued: " + queuedText(s);   // so a message waiting for Claude's next step doesn't look lost
+      txt(fit(d, room2), x, y, queued ? C_CLAUDE : C_DIM);
       y += LINE_H;
     }
     y += 2;
@@ -2556,6 +2585,41 @@ static void tiltTick() {
   float d = (ax - base) * tiltMode * (flipped ? -1 : 1);
   if (d > 0.3f) { scrollLine++; dirty = true; touch(); }
   else if (d < -0.3f && scrollLine > 0) { scrollLine--; dirty = true; touch(); }
+}
+
+// Wake the dimmed screen when the Stick is picked up. Read the accelerometer a few times a second
+// while the screen is dim or off; a pick-up is steady movement that follows a spell of lying still.
+// Knocks on the desk (one or two spikes) and a Stick that is moving all the time (in a bag) never wake it.
+// The constants are a first guess, not tuned on hardware: they are the numbers to adjust.
+struct MotionWake { float px = 0, py = 0, pz = 0; bool have = false; uint32_t stillMs = 0; float energy = 0; };
+static const float    MW_REST = 0.04f;   // total change between readings (in g) that counts as lying still
+static const float    MW_MOVE = 0.08f;   // ...and as moving
+static const float    MW_CAP = 0.25f;    // one reading adds at most this much, so a single knock can't wake it alone
+static const float    MW_NEED = 0.60f;   // movement needed to wake (three strong readings, or about six gentle ones)
+static const uint32_t MW_STILL_MS = 1500;   // lying still this long first
+static bool motionWakeStep(MotionWake& m, float ax, float ay, float az, uint32_t dtMs) {
+  if (!m.have) { m.px = ax; m.py = ay; m.pz = az; m.have = true; return false; }
+  float d = fabsf(ax - m.px) + fabsf(ay - m.py) + fabsf(az - m.pz);
+  m.px = ax; m.py = ay; m.pz = az;
+  if (d < MW_REST) { m.stillMs += dtMs; m.energy = m.energy > 0.1f ? m.energy - 0.1f : 0; return false; }
+  if (d < MW_MOVE) return false;
+  if (m.energy == 0 && m.stillMs < MW_STILL_MS) { m.stillMs = 0; return false; }   // moving all along
+  m.energy += d < MW_CAP ? d : MW_CAP;
+  if (m.energy < MW_NEED) return false;
+  m.energy = 0; m.stillMs = 0;
+  return true;
+}
+
+static void motionWakeTick() {
+  static uint32_t last = 0;
+  static MotionWake m;
+  if (!wakeMotion || !dimmed) { m = MotionWake(); return; }   // starts afresh each time the screen dims
+  uint32_t now = millis();
+  if (now - last < 250) return;
+  uint32_t dt = now - last; last = now;
+  float ax, ay, az;
+  if (!M5.Imu.getAccel(&ax, &ay, &az)) return;
+  if (motionWakeStep(m, ax, ay, az, dt > 1000 ? 250 : dt)) touch();
 }
 
 static void listNav(int total, bool next, bool prev) {
@@ -2678,6 +2742,7 @@ static void buttons() {
     if (!aClick) return;
     switch (e.kind) {
       case MI_STOP:   if (s && sessionStop(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
+      case MI_UNQUEUE: if (s && unqueue(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
       case MI_MACRO:  if (s) { tel.macroTaps++; if (s->bridge ? bridgeSessionAct(s, "macro", e.arg) : deliverText(s, macros[e.arg].text)) beep(2); }
                       screen = SCR_HOME; menuIdx = 0; break;
       case MI_REMOTE: setRemoteSetting(conf.remote + 1); break;                       // stay in menu
@@ -2792,6 +2857,7 @@ void setup() {
   bridgeUrl = prefs.getString("brurl", ""); bridgeTok = prefs.getString("brtok", "");
   loadNets();
   tiltMode = prefs.getChar("tilt", 1);
+  wakeMotion = prefs.getBool("wakem", true);
   loadConfig();
   skipVersion = prefs.getString("skipver", "");
   setupDone = prefs.getBool("setup", false);
@@ -2864,6 +2930,7 @@ void loop() {
   bootHealthTick();
   buttons();
   tiltTick();
+  motionWakeTick();
 
   // alert sounds for newly surfaced prompts, plus a gentle reminder
   Approval* a = topApproval();

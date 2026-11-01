@@ -39,7 +39,8 @@ namespace m5 { struct Power_Class { enum is_charging_t { is_discharging=0, is_ch
 extern int TONES;
 struct Speaker_Class { void end(); bool begin(){return true;} bool tone(float, uint32_t){ TONES++; return true; } void setVolume(uint8_t){} };
 struct Mic_Class { bool begin(); void end(); bool record(int16_t*, size_t, uint32_t); size_t isRecording(); };
-struct IMU_Class { bool getAccel(float*a,float*b,float*c){*a=*b=0;*c=1;return true;} };
+extern float IMU_ACC[3];   // tests set the accelerometer reading
+struct IMU_Class { bool getAccel(float*a,float*b,float*c){*a=IMU_ACC[0];*b=IMU_ACC[1];*c=IMU_ACC[2];return true;} };
 struct M5Config { uint32_t serial_baudrate; };
 struct M5Unified { M5GFX Display; Button_Class BtnA, BtnB, BtnPWR; IMU_Class Imu; Mic_Class Mic; m5::Power_Class Power; Speaker_Class Speaker;
  M5Config config(){return {};} void begin(M5Config){} void update(){} };

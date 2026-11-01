@@ -23,7 +23,7 @@ On cards that offer *always allow*, a single A waits 0.35 s to see whether a sec
 - **Always allow** remembers a rule that fits: `Bash(git status *)` for this project, auto-accept edits for the session, a `WebFetch` domain, or an MCP tool. The card's last line shows exactly what will be remembered. It is never offered for compound shell commands or dangerous ones.
 - **Danger cards** (red border) cover `rm -rf`, force pushes, `git reset --hard`, `zfs`/`zpool destroy`, `pct`/`qm destroy`, `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`, stopping SSH or network services, and edits to `/etc`, `~/.ssh` or `.env`. These are heuristics, not a security boundary. Review `.claude/settings.local.json` now and then.
 - **Deny + say why:** hold A, say what Claude should do instead, press A. Claude gets the denial with your words. The phone has a matching **Deny + note** button.
-- **Edits** show a red/green diff; long text scrolls when you tilt the Stick.
+- **Edits** show a red/green diff. Long text and long lists scroll when you tilt the Stick: it takes its angle when the card appears, then tilting about 15-20° forward or back scrolls a line every quarter second. That is all tilt does; it isn't a controller. If it scrolls the wrong way, run `tilt flip` in the flasher's console (or untick *tilt to scroll* in settings).
 
 ## Remote mode
 
@@ -47,7 +47,9 @@ Every terminal with the hooks shows up on Home as `folder@branch` (set `CLAUDEST
 
 ## Push-to-talk
 
-Hold A, speak (up to 20 s), release, review the text, press A to send. It answers a pending Done/Question card, otherwise Claude gets it after its current step. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works; [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network is a good choice, and `Systran/faster-whisper-small` is fine on a CPU. Set the URL under **settings → voice**. Use whatever model name your server expects: servers built on faster-whisper usually want a Hugging Face id such as `Systran/faster-whisper-small`, while servers that imitate OpenAI take `whisper-1` (the default). With a [bridge](REMOTE.md) the speech server is set on the bridge's settings page instead, and the Stick never talks to it directly.
+Hold A, speak (up to 20 s), release, review the text, press A to send. The review screen shows which session it goes to (`@folder@branch`): that is the session that reported most recently, or the one you tied the Stick to (**menu → tie to session**). It answers a pending Done/Question card, otherwise Claude gets it after its current step.
+
+**Messages and macros wait for Claude's next step.** Claude Code only runs the hooks while it is working, so a message can't be typed into a session that is sitting idle at its prompt: it waits, and Claude sees it as "a new instruction from your ClaudeStick" on its next step (or when its turn ends). A waiting message shows as `msg..` in the session list and as `queued: ...` on the session's line; the phone page shows it with a **Cancel** button, and **menu → cancel queued msg** takes it back. The voice review screen says `idle` when the session isn't working. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works; [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network is a good choice, and `Systran/faster-whisper-small` is fine on a CPU. Set the URL under **settings → voice**. Use whatever model name your server expects: servers built on faster-whisper usually want a Hugging Face id such as `Systran/faster-whisper-small`, while servers that imitate OpenAI take `whisper-1` (the default). With a [bridge](REMOTE.md) the speech server is set on the bridge's settings page instead, and the Stick never talks to it directly.
 
 ## Phone page
 
@@ -72,6 +74,6 @@ The StickS3 has a 250 mAh battery. **Not measured on hardware yet**; from the ch
 What helps:
 
 - **Switch Bluetooth off** (menu → bluetooth, or the setup page) when you're away from your computer; Bluetooth only serves the Claude desktop app. It restarts the Stick, saves a little power and frees memory.
-- Keep the volume modest (M5Stack advises under 75% on battery) and let the screen sleep (it dims after 1 minute and turns off after 3).
+- Keep the volume modest (M5Stack advises under 75% on battery) and let the screen sleep (it dims after 1 minute and turns off after 3). A dim or dark screen wakes when you pick the Stick up, by its motion sensor: it needs the Stick to lie still for a moment first, so knocks on the desk and a Stick being carried don't wake it. Switch it off with *wake the screen when picked up* in settings or `wake off` in the console if it wakes too easily or not enough; the sensitivity is a first guess that hasn't been tuned on a real device.
 - **Measure it:** **menu → info** has a `batt` row with level, voltage, and, after 10 minutes unplugged, the drain rate in %/h and the hours left at that rate. `bat` in the serial console prints the same.
 - **Experimental:** `sleep max` in the serial console lets the radio sleep longer between beacons, which may stretch battery life but could add delay or drop connections on some access points. It is untested on hardware; compare the `batt` row with and without it, and `sleep min` puts it back.

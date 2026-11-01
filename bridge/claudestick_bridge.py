@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it
@@ -394,12 +394,15 @@ class Core:
                     return False
                 r["poll"] = self.mono()
                 return True
-            if a in ("say", "macro", "stop"):
+            if a in ("say", "macro", "stop", "unsend"):
                 sid = b.get("session") or max(self.sessions, key=lambda k: self.sessions[k]["seen"], default=None)
                 if sid not in self.sessions:
                     return False
                 if a == "stop":
                     self.sessions[sid]["stop"] = True
+                    return True
+                if a == "unsend":   # take back a message that is still waiting for Claude's next step
+                    self.sessions[sid]["inject"] = ""
                     return True
                 macros = self.conf["macros"]
                 text = str(b.get("text") or "")[:2000] if a == "say" else (macros[idx]["text"] if 0 <= idx < len(macros) else "")
@@ -434,6 +437,7 @@ class Core:
             snap = json.loads(key)   # a copy we can decorate
             for s in snap["sessions"]:
                 s["since_s"] = int(now - self.sessions[s["id"]]["since"])
+                s["idle_s"] = int(now - self.sessions[s["id"]]["seen"])   # since its hook last reported: which session you mean by "the active one"
             if "limits" in snap:
                 snap["limits"]["age_s"] = int(now - self.limits_at)
             for a in snap["approvals"]:
@@ -456,6 +460,8 @@ class Core:
                  "plan_done_n": s["plan_done_n"]}
             if s.get("todo", {}).get("total"):
                 o["todo"] = s["todo"]
+            if s.get("inject"):
+                o["queued"] = s["inject"][:60]   # waiting for Claude's next step; the Stick and phone show it
             if s.get("usage"):
                 o["usage"] = s["usage"]
             if "ctx_pct" in s:

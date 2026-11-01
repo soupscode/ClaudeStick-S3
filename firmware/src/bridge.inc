@@ -165,6 +165,7 @@ static void bridgeApply(JsonDocument& d) {
     String prev = s->state, st = o["state"] | "";
     bool fresh = prev.length() == 0;
     s->gen = bridgeGen; s->lastSeen = now;
+    s->activeAt = now - 1000UL * (o["idle_s"] | 0UL);
     s->project = (const char*)(o["project"] | ""); if (!s->project.length()) s->project = shortId(s->id);
     s->state = st; s->detail = (const char*)(o["detail"] | "");
     if (prev != st) {
@@ -196,6 +197,7 @@ static void bridgeApply(JsonDocument& d) {
       s->tokIn = u["in"] | 0UL; s->tokOut = u["out"] | 0UL; s->tokCR = u["cr"] | 0UL; s->tokCW = u["cw"] | 0UL; s->ctx = u["ctx"] | 0UL;
       s->model = (const char*)(u["model"] | "");
     }
+    s->queued = (const char*)(o["queued"] | "");
     s->ctxPct = o["ctx_pct"].is<float>() ? o["ctx_pct"].as<float>() : -1;
     s->modelName = (const char*)(o["model_name"] | "");
   }

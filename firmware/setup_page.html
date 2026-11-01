@@ -26,6 +26,7 @@ pre{background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;whit
 <label>buddy <span class=d>(watch the Stick, it previews live)</span></label><select id=buddy onchange=preview()></select>
 <label>sound volume</label><input type=range id=vol min=0 max=255>
 <div class=row><input type=checkbox id=tilt><label for=tilt>tilt to scroll long text</label></div>
+<div class=row><input type=checkbox id=wake><label for=wake>wake the screen when picked up</label></div>
 <div class=row><input type=checkbox id=flip><label for=flip>flip screen 180&deg; (if it's upside down)</label></div>
 <div class=row><input type=checkbox id=bton><label for=bton>Bluetooth for the Claude desktop app <span class=d>(turn off to save battery when you're away from your computer)</span></label></div>
 <div class=row id=telrow><input type=checkbox id=tel><label for=tel>Send anonymous usage statistics <span class=d>(device, firmware version, rough counts of approvals/macros/etc &mdash; never your commands, code or voice; see docs/TELEMETRY.md)</span></label></div>
@@ -163,7 +164,7 @@ $('wifi').classList.toggle('hide',I.wifi.connected&&!I.ap);$('wform').classList.
 if(I.wifi.connected){$('wmsg').innerHTML='<span class=ok>connected to '+I.wifi.ssid+' as '+I.wifi.ip+'</span>'+(I.ap?'<br>switch your phone back to your home Wi-Fi, then open <b>http://'+I.wifi.ip+':'+I.port+'/setup</b> to finish.':'')}
 $('me').classList.toggle('hide',!I.wifi.connected&&!I.done);$('time').classList.toggle('hide',!I.wifi.connected&&!I.done);
 if(!$('tz').options.length)fillTz();pickTz();if(I.wifi.connected&&!I.tz_name&&!I.tz&&!I.done)saveTime(true);
-$('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('flip').checked=!!I.flip;$('bton').checked=I.bt_on!==false;$('remote').value=I.remote;
+$('font').value=I.font===0?0:1;$('name').value=I.name;$('vol').value=I.volume;$('tilt').checked=I.tilt;$('wake').checked=I.wake!==false;$('flip').checked=!!I.flip;$('bton').checked=I.bt_on!==false;$('remote').value=I.remote;
 $('telrow').classList.toggle('hide',!I.telemetry_available);$('tel').checked=!!I.telemetry;
 $('buddy').innerHTML=I.buddies.map((b,i)=>`<option value=${i}>${b}</option>`).join('');$('buddy').value=I.buddy;
 const online=I.wifi.connected||I.done;$('nets').classList.toggle('hide',!online);$('brcard').classList.toggle('hide',!online);if(online){drawNets();brFill()}
@@ -189,7 +190,7 @@ async function scan(){$('ssid').innerHTML='<option>scanning…</option>';try{con
 async function joinWifi(){const s=$('ssid2').value||$('ssid').value;$('wmsg').textContent='connecting to '+s+'…';await api('/setup/wifi',{ssid:s,pass:$('pw').value});
 for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,1000));try{I=await api('/setup/info');if(I.wifi.connected)return load()}catch(e){}}$('wmsg').innerHTML='<span class=bad>could not connect. check the password (2.4 GHz only).</span>'}
 function preview(){api('/setup/preview',{buddy:+$('buddy').value,font:+$('font').value})}
-async function save(){await saveTime(true);const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,flip:$('flip').checked,bt:$('bton').checked,telemetry:$('tel').checked,font:+$('font').value,remote:$('remote').value});
+async function save(){await saveTime(true);const r=await api('/setup/save',{name:$('name').value,buddy:+$('buddy').value,volume:+$('vol').value,tilt:$('tilt').checked,wake:$('wake').checked,flip:$('flip').checked,bt:$('bton').checked,telemetry:$('tel').checked,font:+$('font').value,remote:$('remote').value});
 $('smsg').innerHTML=' <span class=ok>saved'+(r.restart?' · Stick restarting to apply the change':'')+'</span>';T=r.token;show(r);loadConf()}
 function show(r){const h=r.ip||I.wifi.ip,p=r.port||I.port,t=r.token||T;$('done').classList.remove('hide');
 const viaBridge=!I.bridge&&I.link&&I.link.set;$('cmdw').classList.toggle('hide',viaBridge);$('cmdwl').classList.toggle('hide',viaBridge);

@@ -147,6 +147,59 @@ int main() {
   HTTP_LOG.clear(); script(200, R"({"ok":true})");
   bridgeSessionAct(sa, "macro", 2);
   check("macro by index", has(lastReq(), "\"action\":\"macro\"") && has(lastReq(), "\"index\":2"), lastReq());
+
+  // ---- a message waiting on the bridge shows on the Stick and can be taken back
+  {
+    std::string q = stateV(7); q.insert(q.find("\"state\":\"working\""), "\"queued\":\"also update the docs\",");
+    script(200, q); pollNow();
+    sa = findSession("sess-a", false);
+    check("queued text from the bridge is mirrored", sa && sa->queued == "also update the docs" && queuedText(*sa) == "also update the docs", sa ? sa->queued.c_str() : "no session");
+    pinned = "sess-a";
+    { MenuEntry e2[MAX_ITEMS]; String l2[MAX_ITEMS]; int n2 = menuEntries(e2, l2); bool found = false;
+      for (int i = 0; i < n2; i++) if (e2[i].kind == MI_UNQUEUE) found = true;
+      check("the menu offers to cancel it", found); }
+    HTTP_LOG.clear(); script(200, R"({"ok":true})");
+    check("cancel -> POST /act unsend for that session", unqueue(sa) && has(lastReq(), "\"action\":\"unsend\"") && has(lastReq(), "\"session\":\"sess-a\""), lastReq());
+    script(200, stateV(8)); pollNow();
+    sa = findSession("sess-a", false);
+    check("once the bridge drops it the Stick does too", sa && sa->queued == "" && !queuedText(*sa).length());
+    { MenuEntry e2[MAX_ITEMS]; String l2[MAX_ITEMS]; int n2 = menuEntries(e2, l2); bool found = false;
+      for (int i = 0; i < n2; i++) if (e2[i].kind == MI_UNQUEUE) found = true;
+      check("...and the menu item is gone", !found); }
+    script(200, q); pollNow(); sa = findSession("sess-a", false);
+    String savedTok = token; token = "";   // no device token set: the handlers don't ask for one
+    hState();
+    check("the phone page's state carries it", has(LAST_SENT, "\"queued\":\"also update the docs\""), LAST_SENT.substr(0, 300));
+    script(200, stateV(9)); pollNow(); pinned = "";
+
+    // a direct hook's queued message lives on the Stick
+    Session* d = findSession("direct-1", true); d->used = true; d->project = "scripts"; d->state = "working";
+    d->inject = "run the linter";
+    check("a direct session's queued text is its own inject", queuedText(*d) == "run the linter");
+    REQ_BODY = R"({"action":"unsend","session":"direct-1"})"; hAct();
+    check("POST /act unsend clears it", d->inject == "" && LAST_CODE == 200, std::to_string(LAST_CODE));
+    check("nothing to cancel the second time", !unqueue(d));
+    REQ_BODY = R"({"action":"unsend","session":"nope"})"; hAct();
+    check("an unknown session is refused", LAST_CODE != 200 || has(LAST_SENT, "false"), LAST_SENT);
+    d->used = false; token = savedTok;
+  }
+
+  // ---- "the active session" (voice, macros, stop) is the one whose hook reported last, not whichever polled last
+  {
+    auto withIdle = [&](int v, int idleA, int idleB) {
+      std::string q = stateV(v);
+      q.insert(q.find("\"state\":\"working\""), "\"idle_s\":" + std::to_string(idleA) + ",");
+      q.insert(q.find("\"state\":\"done\""), "\"idle_s\":" + std::to_string(idleB) + ",");
+      return q;
+    };
+    focusSession = -1;
+    script(200, withIdle(30, 40, 2)); pollNow();
+    check("the session that reported most recently is the target", targetSession() && targetSession()->id == "sess-b", targetSession() ? targetSession()->id.c_str() : "none");
+    script(200, withIdle(31, 1, 90)); pollNow();
+    check("...and it follows the activity", targetSession() && targetSession()->id == "sess-a", targetSession() ? targetSession()->id.c_str() : "none");
+    script(200, stateV(32)); pollNow();   // an older bridge says nothing about idleness: keep working, ties allowed
+    check("a state without idle_s still picks a session", targetSession() != nullptr);
+  }
   focusSession = -1;
   MenuEntry ents[MAX_ITEMS]; String labels[MAX_ITEMS];
   int n = menuEntries(ents, labels);

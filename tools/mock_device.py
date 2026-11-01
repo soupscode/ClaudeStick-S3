@@ -52,7 +52,7 @@ CONF = {"permission_wait_s": 20, "remote_permission_wait_s": 600, "stop_wait_s":
 S = {"sessions": {}, "approvals": {}, "stops": {}, "next": 1, "log": [], "pinned": "",
      "last_stick": 0.0, "last_kbd": 0.0, "ota_bytes": 0}
 SETUP = {"nets": [], "bridge": {"url": "", "tok": "", "up": False, "error": ""}, "done": False, "ap": False, "ssid": "", "connected": True, "ip": "127.0.0.1", "name": "Claude-MOCK",
-         "buddy": 0, "volume": 120, "tilt": True, "bt_on": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
+         "buddy": 0, "volume": 120, "tilt": True, "wake": True, "bt_on": True, "tz": "", "tz_name": "", "clock24": False, "font": 1}
 DEVICE_ID, MDNS_HOST = "a1b2c3d4e5f6", "claudestick-e5f6.local"
 
 
@@ -124,12 +124,15 @@ def act(b):
             else:
                 return False
             return True
-        if a in ("say", "macro", "stop"):
+        if a in ("say", "macro", "stop", "unsend"):
             sid = b.get("session") or max(S["sessions"], key=lambda k: S["sessions"][k].get("seen", 0), default=None)
             if sid not in S["sessions"]:
                 return False
             if a == "stop":
                 S["sessions"][sid]["stop"] = True
+                return True
+            if a == "unsend":
+                S["sessions"][sid]["inject"] = ""
                 return True
             m = CONF["macros"]
             text = b.get("text", "") if a == "say" else (m[idx]["text"] if 0 <= idx < len(m) else "")
@@ -204,7 +207,7 @@ class H(BaseHTTPRequestHandler):
                                    "link": {"url": SETUP["bridge"]["url"], "set": bool(SETUP["bridge"]["url"]),
                                               "up": SETUP["bridge"]["up"], "error": SETUP["bridge"]["error"]},
                                    "name": SETUP["name"], "bt": SETUP["name"], "buddy": SETUP["buddy"],
-                                   "volume": SETUP["volume"], "tilt": SETUP["tilt"], "bt_on": SETUP["bt_on"], "remote": CONF["remote"],
+                                   "volume": SETUP["volume"], "tilt": SETUP["tilt"], "wake": SETUP["wake"], "bt_on": SETUP["bt_on"], "remote": CONF["remote"],
                                    "telemetry": CONF["telemetry"], "telemetry_available": bool(CONF["telemetry_url"]),
                                    "buddies": BUDDIES, "token": TOKEN, "ip": SETUP["ip"]})
             if p == "/setup/scan":
@@ -221,6 +224,7 @@ class H(BaseHTTPRequestHandler):
                     "remote": remote_now(), "remote_setting": CONF["remote"], "pinned": S["pinned"],
                     "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"],
                                   **({"todo": v["todo"]} if v.get("todo", {}).get("total") else {}),
+                                  **({"queued": v["inject"][:60]} if v.get("inject") else {}),
                                   **({"usage": v["usage"]} if v.get("usage") else {}),
                                   **({"ctx_pct": v["u_ctx_pct"]} if "u_ctx_pct" in v else {}),
                                   **({"model_name": v["u_model"]} if "u_model" in v else {})}
@@ -339,6 +343,8 @@ class H(BaseHTTPRequestHandler):
                 restart = name != SETUP["name"]
                 SETUP.update(name=name[:24], buddy=b.get("buddy", 0), volume=b.get("volume", 120),
                              tilt=bool(b.get("tilt")), done=True)
+                if isinstance(b.get("wake"), bool):
+                    SETUP["wake"] = b["wake"]
                 if isinstance(b.get("font"), int):
                     SETUP["font"] = b["font"]
                 if isinstance(b.get("bt"), bool) and b["bt"] != SETUP["bt_on"]:

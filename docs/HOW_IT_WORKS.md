@@ -41,7 +41,7 @@ Every call except the pages below carries `X-Token: <token>` (or `?t=`). Hooks p
 | `POST /pair/new`, `POST /pair` | Bridge only. `/pair/new` (token needed) makes a one-time 6-digit code, `{"code", "expires_in"}`. `/pair` (no token) trades `{"code"}` for `{"ok", "token", "id"}`; wrong, expired and missing codes all answer `403` alike, a locked-out address `429`. |
 | `POST /event`, `POST /usage` | Session state; context and plan limits. |
 | `POST/GET/DELETE /permission`, `/stop` | Create, poll and cancel approvals and Done/Question cards. |
-| `GET /state`, `POST /act` | What the phone page shows; its actions (approve, deny, choose, say, macro, stop, pin, remote). |
+| `GET /state`, `POST /act` | What the phone page shows; its actions (approve, deny, choose, say, macro, stop, unsend, pin, remote). A session with a message waiting for Claude's next step carries `queued` (clipped to 60 characters); `unsend` takes it back. The bridge also sends `idle_s` per session (seconds since its hook last reported), which is how the Stick decides which session "the active one" is. |
 | `GET/POST /config` | Settings shared with every hook (macros, waits, voice, ntfy). |
 | `POST /stt` | Bridge only: WAV in, `{"text":...}` out. |
 | `POST /ota` | Upload a firmware image by hand. |
@@ -83,7 +83,7 @@ The clock is set from NTP when Wi-Fi is up, with the hook, the desktop app or th
 
 ## Power
 
-Screen brightness drops after 1 min and the screen turns off after 3 min; the CPU runs at 160 MHz (80 MHz while dimmed). Wi-Fi stays on so hooks and the bridge can reach the Stick; Bluetooth (for the desktop app) can be switched off in settings, which saves power and frees RAM for TLS. A drain meter (`drainTick`) tracks the battery level since it was unplugged and feeds the info screen's `batt` row and the serial `bat` command; `sleep max` is an experimental switch to `WIFI_PS_MAX_MODEM`, off by default because it hasn't been tried on hardware. If the heap fragments badly after days of uptime, the Stick restarts itself while idle.
+Screen brightness drops after 1 min and the screen turns off after 3 min; while it is dim or off, `motionWakeTick()` reads the accelerometer four times a second and `motionWakeStep()` wakes the screen on steady movement that follows a spell of lying still (single knocks and constant movement never do; the `MW_*` constants are untuned guesses, the `wake` setting turns it off); the CPU runs at 160 MHz (80 MHz while dimmed). Wi-Fi stays on so hooks and the bridge can reach the Stick; Bluetooth (for the desktop app) can be switched off in settings, which saves power and frees RAM for TLS. A drain meter (`drainTick`) tracks the battery level since it was unplugged and feeds the info screen's `batt` row and the serial `bat` command; `sleep max` is an experimental switch to `WIFI_PS_MAX_MODEM`, off by default because it hasn't been tried on hardware. If the heap fragments badly after days of uptime, the Stick restarts itself while idle.
 
 ## Repo map
 

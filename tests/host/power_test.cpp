@@ -94,6 +94,63 @@ int main() {
   check("a save that doesn't mention remote mode doesn't touch the bridge", HTTP_LOG.empty());
   bridgeUp = false;
 
+  // ---- wake on motion
+  {
+    auto feed = [](MotionWake& m, std::vector<float> d, uint32_t dt = 250) {   // d: change between readings; returns the step that woke it, or -1
+      float x = 0;
+      for (size_t i = 0; i < d.size(); i++) { x += d[i]; if (motionWakeStep(m, x, 0, 1, dt)) return (int)i; }
+      return -1;
+    };
+    MotionWake m; motionWakeStep(m, 0, 0, 1, 250);
+    std::vector<float> still(12, 0.005f);                       // lying on a desk for 3 s
+    check("lying still never wakes it", feed(m, std::vector<float>(80, 0.005f)) == -1);
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, still);
+    check("one knock on the desk doesn't wake it", feed(m, { 1.5f, 0.0f, 0.0f, 0.0f }) == -1);
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, still);
+    check("two knocks don't either", feed(m, { 1.0f, 0.0f, 1.0f, 0.0f, 0.0f }) == -1);
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, still);
+    int w = feed(m, { 0.3f, 0.3f, 0.3f, 0.3f });
+    check("picking it up after lying still wakes it within a second", w >= 0 && w <= 2, std::to_string(w));
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, still);
+    w = feed(m, std::vector<float>(12, 0.12f));
+    check("a slow, gentle lift wakes it too", w >= 0 && w <= 8, std::to_string(w));
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250);
+    check("moving all the time (in a bag) never wakes it", feed(m, std::vector<float>(60, 0.3f)) == -1);
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, still);
+    feed(m, std::vector<float>(6, 0.3f));
+    check("after waking it needs to lie still again first", feed(m, std::vector<float>(10, 0.3f)) == -1);
+    m = MotionWake(); motionWakeStep(m, 0, 0, 1, 250); feed(m, std::vector<float>(4, 0.005f));
+    check("a short pause (1 s) isn't enough to count as lying still", feed(m, std::vector<float>(8, 0.3f)) == -1);
+
+    // in the loop: only while the screen is dim, and only if the setting is on
+    PREFS["setup"] = "1"; setup(); token = "";
+    check("on by default", wakeMotion);
+    dimmed = true; wakeMotion = true; IMU_ACC[0] = 0; IMU_ACC[1] = 0; IMU_ACC[2] = 1;
+    NOW = 500000; motionWakeTick();                                    // takes the first reading
+    for (int i = 0; i < 10; i++) { NOW += 250; motionWakeTick(); }     // 2.5 s still
+    check("still on a desk: stays dim", dimmed);
+    for (int i = 0; i < 5; i++) { NOW += 250; IMU_ACC[0] += 0.3f; motionWakeTick(); }
+    check("picked up: the screen wakes", !dimmed);
+    dimmed = true; wakeMotion = false; NOW += 5000; motionWakeTick();
+    for (int i = 0; i < 12; i++) { NOW += 250; motionWakeTick(); }
+    for (int i = 0; i < 8; i++) { NOW += 250; IMU_ACC[0] += 0.3f; motionWakeTick(); }
+    check("with the setting off, motion does nothing", dimmed);
+    dimmed = false; wakeMotion = true; IMU_ACC[0] = 0;
+
+    // the setting: serial command, setup page, kept across reboots
+    Serial.out.clear(); textCommand("wake off");
+    check("`wake off` turns it off and remembers", !wakeMotion && PREFS["wakem"] == "0" && has(Serial.out, "wake=off"), Serial.out);
+    PREFS["setup"] = "1"; setup(); token = "";
+    check("it is still off after a reboot", !wakeMotion);
+    textCommand("wake on");
+    check("`wake on` turns it back on", wakeMotion && PREFS["wakem"] == "1");
+    REQ_BODY = R"({"wake":false})"; hSetupSave();
+    check("the setup page can switch it off", !wakeMotion && PREFS["wakem"] == "0");
+    REQ_BODY = R"({"name":"Claude-X"})"; hSetupSave();
+    check("a save that doesn't mention it leaves it alone", !wakeMotion);
+    wakeMotion = true;
+  }
+
   printf("\n%s\n", fails ? "power: FAILED" : "power: all passed");
   return fails;
 }

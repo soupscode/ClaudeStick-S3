@@ -2,6 +2,12 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.5
+- Wake the screen when you pick the Stick up (setting: "wake the screen when picked up")
+- A message waiting for Claude's next step shows on the Stick and phone page, and can be cancelled
+- Fix: voice, macros and "stop now" went to an arbitrary bridge session; they now go to the one that was active last
+- Voice review says when the session is idle (it sees the message on its next step)
+
 ## 0.9.4
 - Fix: the Stick shows the task Claude started most recently, not the oldest one still marked in progress
 - Fix: a long task list follows the current task instead of starting at the top

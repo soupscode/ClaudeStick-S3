@@ -388,6 +388,28 @@ check("queued text arrives with the next event", j["inject"] == "  go on  ", j)
 check("...once", post("/event", {**HOOK, "event": "working", "can_inject": True})[1]["inject"] is None)
 press("macro", session="s1", index=0)
 check("macro queues its text", post("/event", {**HOOK, "event": "working", "can_inject": True})[1]["inject"] == "Continue.")
+
+# a queued message can be seen and taken back
+press("say", session="s1", text="queued for the next step " + "x" * 100)
+q1 = [x for x in state()["sessions"] if x["id"] == "s1"][0]
+check("a queued message shows in the state (clipped to 60)", q1.get("queued", "").startswith("queued for the next step") and len(q1["queued"]) == 60, q1)
+q2 = [x for x in get("/state?n=1", headers={"X-Client": "stick"})[1]["sessions"] if x["id"] == "s1"][0]
+check("...in the Stick's trimmed view too", "queued" in q2, q2)
+check("unsend takes it back", press("unsend", session="s1")[0] == 200)
+check("...nothing is delivered afterwards", post("/event", {**HOOK, "event": "working", "can_inject": True})[1]["inject"] is None)
+check("...and the state stops showing it", "queued" not in [x for x in state()["sessions"] if x["id"] == "s1"][0])
+check("unsend with nothing queued is harmless", press("unsend", session="s1")[0] == 200)
+check("unsend for an unknown session -> 404", press("unsend", session="ghost")[0] == 404)
+
+# which session was active last: idle_s counts from each hook's last report
+post("/event", {"session": "idle-a", "project": "a", "event": "working"})
+clock.t += 6
+post("/event", {"session": "idle-b", "project": "b", "event": "working"})
+clock.t += 3
+ids = {x["id"]: x for x in state()["sessions"]}
+check("each session reports how long since its hook last spoke", ids["idle-a"]["idle_s"] >= 9 and 3 <= ids["idle-b"]["idle_s"] < 6, (ids["idle-a"], ids["idle-b"]))
+post("/event", {"session": "idle-a", "event": "end"})
+post("/event", {"session": "idle-b", "event": "end"})
 check("macro index out of range -> 404", press("macro", session="s1", index=99)[0] == 404)
 check("empty say -> 404", press("say", session="s1", text="   ")[0] == 404)
 check("say to an unknown session -> 404", press("say", session="ghost", text="hi")[0] == 404)

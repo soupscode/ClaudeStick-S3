@@ -2,6 +2,13 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.6
+- Voice and macro messages are queued, and the Stick offers "send now": the message goes in before Claude's next tool call
+- A message for a session that isn't working (turn ended, background tasks running) can wake it: the installer adds a background Stop hook (--wake / --no-wake)
+- Sessions that are only waiting stay listed instead of dropping off after 30 minutes
+- Tilt back/forward moves up/down in menus and Done cards (a tap on the power button switches the Stick off, so it no longer does anything)
+- Done and Question cards say "hold B" dismisses (or answers at the keyboard)
+
 ## 0.9.5
 - Wake the screen when you pick the Stick up (setting: "wake the screen when picked up")
 - A message waiting for Claude's next step shows on the Stick and phone page, and can be cancelled

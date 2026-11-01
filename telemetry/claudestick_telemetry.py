@@ -29,7 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.5"   # kept in step with FW_VERSION; tools/verify_release.py checks this like the bridge's
+VERSION = "0.9.6"   # kept in step with FW_VERSION; tools/verify_release.py checks this like the bridge's
 
 MAX_BODY = 4096                 # a report is a few hundred bytes; generous headroom, not unbounded
 RATE_WINDOW_S, RATE_MAX = 600, 20   # per address: 20 reports / 10 min is far above one real device's 6 h cadence

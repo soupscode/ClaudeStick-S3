@@ -26,6 +26,11 @@ with sync_playwright() as p:
         md.S["sessions"]["s1"]["inject"] = "also run the linter"
     pg.wait_for_selector("text=queued: also run the linter", timeout=6000)
     print("PASS queued message shown on the phone page")
+    pg.click("button:text-is('Send now')"); time.sleep(0.8)
+    print(("PASS" if md.S["sessions"]["s1"].get("urgent") else "FAIL") + " Send now marks the message to go in at the next step")
+    pg.wait_for_selector("text=(sending now)", timeout=6000)
+    print("PASS ...and the page says it's on its way")
+    print(("PASS" if pg.locator("button:text-is('Send now')").count() == 0 else "FAIL") + " ...with no second Send now button")
     pg.click("button:text-is('Cancel')"); time.sleep(0.8)
     print(("PASS" if md.S["sessions"]["s1"]["inject"] == "" else "FAIL") + " Cancel takes it back")
     pg.wait_for_function("!document.body.innerText.includes('queued:')", timeout=6000)

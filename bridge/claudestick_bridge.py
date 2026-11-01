@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it
@@ -187,7 +187,7 @@ class Core:
                 oldest = min(self.sessions, key=lambda k: self.sessions[k]["seen"])
                 del self.sessions[oldest]
             s = self.sessions[sid] = {"project": sid[:8], "state": "", "detail": "", "since": self.mono(),
-                                      "stop": False, "inject": "", "plan_done_n": 0}
+                                      "stop": False, "inject": "", "urgent": False, "watch": 0.0, "plan_done_n": 0}
         if isinstance(body.get("project"), str) and body["project"]:
             s["project"] = body["project"][:60]
         s["seen"] = self.mono()
@@ -213,7 +213,7 @@ class Core:
         for table in (self.approvals, self.stops):
             for k in [k for k, r in table.items() if now - r["poll"] > STALE_S]:
                 del table[k]
-        for k in [k for k, s in self.sessions.items() if now - s["seen"] > SESSION_IDLE_S]:
+        for k in [k for k, s in self.sessions.items() if now - max(s["seen"], s.get("watch", 0)) > SESSION_IDLE_S]:
             del self.sessions[k]
         if self.pinned and self.pinned not in self.sessions:
             self.pinned = ""
@@ -227,7 +227,7 @@ class Core:
                 r["custom"], r["result"] = text, "custom"
                 return True
         if sid in self.sessions:
-            self.sessions[sid]["inject"] = text
+            self.sessions[sid]["inject"], self.sessions[sid]["urgent"] = text, False
             return True
         return False
 
@@ -250,8 +250,22 @@ class Core:
             out = {"stop": False, "inject": None, "remote": self.remote_now()}
             if b.get("can_stop") and s["stop"]:
                 out["stop"], s["stop"] = True, False
-            elif b.get("can_inject") and s["inject"]:
-                out["inject"], s["inject"] = s["inject"], ""
+            elif (b.get("can_inject") or (b.get("can_preempt") and s["urgent"])) and s["inject"]:
+                out["inject"], s["inject"], s["urgent"] = s["inject"], "", False   # preempt: only a message you chose to send now
+            return out
+
+    def watch(self, b):
+        """A hook that is waiting out an idle spell asks whether text has arrived for its session.
+        It keeps the session listed without making it look recently active (that is what `seen` says)."""
+        with self.lock:
+            sid = str(b.get("session") or "unknown")[:128]
+            s = self.sessions.get(sid)
+            if s is None:
+                sid, s = self._session(b)
+            s["watch"] = self.mono()
+            out = {"inject": None, "remote": self.remote_now()}
+            if s["inject"]:
+                out["inject"], s["inject"], s["urgent"] = s["inject"], "", False
             return out
 
     def _extras(self, sid, s, b):
@@ -394,7 +408,7 @@ class Core:
                     return False
                 r["poll"] = self.mono()
                 return True
-            if a in ("say", "macro", "stop", "unsend"):
+            if a in ("say", "macro", "stop", "unsend", "sendnow"):
                 sid = b.get("session") or max(self.sessions, key=lambda k: self.sessions[k]["seen"], default=None)
                 if sid not in self.sessions:
                     return False
@@ -402,7 +416,12 @@ class Core:
                     self.sessions[sid]["stop"] = True
                     return True
                 if a == "unsend":   # take back a message that is still waiting for Claude's next step
-                    self.sessions[sid]["inject"] = ""
+                    self.sessions[sid]["inject"], self.sessions[sid]["urgent"] = "", False
+                    return True
+                if a == "sendnow":  # deliver it at the very next hook call, before the next tool runs
+                    if not self.sessions[sid]["inject"]:
+                        return False
+                    self.sessions[sid]["urgent"] = True
                     return True
                 macros = self.conf["macros"]
                 text = str(b.get("text") or "")[:2000] if a == "say" else (macros[idx]["text"] if 0 <= idx < len(macros) else "")
@@ -462,6 +481,8 @@ class Core:
                 o["todo"] = s["todo"]
             if s.get("inject"):
                 o["queued"] = s["inject"][:60]   # waiting for Claude's next step; the Stick and phone show it
+                if s.get("urgent"):
+                    o["urgent"] = True               # "send now" was pressed: it goes at the next hook call
             if s.get("usage"):
                 o["usage"] = s["usage"]
             if "ctx_pct" in s:
@@ -822,7 +843,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({"ok": ok}, 200 if ok else 404)
         if p == "/config":
             return self.send(core.config_post(b, q.get("secrets") == "1"))
-        routes = {"/event": core.event, "/usage": core.usage}
+        routes = {"/event": core.event, "/usage": core.usage, "/watch": core.watch}
         if p in routes:
             return self.send(routes[p](b))
         if p in ("/permission", "/stop"):

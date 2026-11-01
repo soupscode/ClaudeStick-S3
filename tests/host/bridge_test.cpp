@@ -184,6 +184,62 @@ int main() {
     d->used = false; token = savedTok;
   }
 
+  // ---- send now: the queued message goes in before the next tool runs; a voice message offers it
+  {
+    std::string q = stateV(40); q.insert(q.find("\"state\":\"working\""), "\"queued\":\"also update the docs\",");
+    script(200, q); pollNow(); pinned = "sess-a";
+    Session* sb = findSession("sess-a", false);
+    check("bridge: a queued message is not urgent by default", sb && sb->queued.length() && !sb->urgent);
+    auto hasItem = [&](MenuItem k) { MenuEntry e2[MAX_ITEMS]; String l2[MAX_ITEMS]; int n2 = menuEntries(e2, l2); for (int i = 0; i < n2; i++) if (e2[i].kind == k) return true; return false; };
+    check("the menu offers send-now and cancel", hasItem(MI_SENDNOW) && hasItem(MI_UNQUEUE));
+    HTTP_LOG.clear(); script(200, R"({"ok":true})");
+    check("send now -> POST /act sendnow for that session", sendNow(sb) && has(lastReq(), "\"action\":\"sendnow\"") && has(lastReq(), "\"session\":\"sess-a\""), lastReq());
+    std::string u = stateV(41); u.insert(u.find("\"state\":\"working\""), "\"queued\":\"also update the docs\",\"urgent\":true,");
+    script(200, u); pollNow(); sb = findSession("sess-a", false);
+    check("an urgent message is mirrored", sb && sb->urgent);
+    check("...and the menu no longer offers send-now (it's already on its way)", !hasItem(MI_SENDNOW) && hasItem(MI_UNQUEUE));
+    script(200, stateV(42)); pollNow(); sb = findSession("sess-a", false);
+    check("once it's gone, urgency goes with it", sb && !sb->urgent && sb->queued == "");
+    pinned = "";
+
+    // direct hook, on the Stick itself
+    String savedTok = token; token = "";
+    Session* d = findSession("direct-2", true); d->used = true; d->project = "scripts"; d->state = "tool";
+    d->inject = "look at this first";
+    REQ_BODY = R"({"session":"direct-2","event":"tool","can_stop":true,"can_preempt":true})"; hEvent();
+    check("a tool-call check doesn't take a message that isn't urgent", !has(LAST_SENT, "look at this first") && d->inject.length(), LAST_SENT);
+    check("send now (direct) marks it", sendNow(d) && d->urgent);
+    REQ_BODY = R"({"session":"direct-2","event":"tool","can_stop":true,"can_preempt":true})"; hEvent();
+    check("...then the next tool-call check hands it over, once", has(LAST_SENT, "look at this first") && d->inject == "" && !d->urgent, LAST_SENT);
+    d->inject = "wake up";
+    REQ_BODY = R"({"session":"direct-2"})"; hWatch();
+    check("/watch hands over queued text and clears it", has(LAST_SENT, "wake up") && d->inject == "", LAST_SENT);
+    REQ_BODY = R"({"session":"direct-2"})"; hWatch();
+    check("...once", !has(LAST_SENT, "wake up"), LAST_SENT);
+    check("/watch keeps the session listed without counting as activity", d->watchAt != 0);
+    REQ_BODY = R"({"session":"ghost-2","project":"ghost"})"; hWatch();
+    { Session* g = findSession("ghost-2", false);
+      check("/watch for an unknown session lists it again (the Stick restarted)", g != nullptr);
+      if (g) g->used = false; }
+    REQ_BODY = R"({"action":"sendnow","session":"nope"})"; hAct();
+    check("send now for an unknown session is refused", LAST_CODE != 200 || has(LAST_SENT, "false"), LAST_SENT);
+
+    // voice: the text is queued, and the Stick offers to send it now
+    d->inject = ""; d->urgent = false; voiceTarget = "direct-2"; voiceText = "check the logs"; voiceStopReq = 0; voiceApproval = 0; voiceState = V_CONFIRM; dimmed = false; noticeUntil = 0;
+    M5.BtnA.c = true; buttons(); M5.BtnA.c = false;
+    check("sending a voice message queues it and offers 'send now'", voiceState == V_QUEUED && d->inject == "check the logs", std::to_string((int)voiceState));
+    M5.BtnA.c = true; buttons(); M5.BtnA.c = false;
+    check("A on that offer sends it now", voiceState == V_IDLE && d->urgent && d->inject == "check the logs");
+    d->inject = ""; d->urgent = false; voiceState = V_CONFIRM;
+    M5.BtnA.c = true; buttons(); M5.BtnA.c = false;
+    M5.BtnB.c = true; buttons(); M5.BtnB.c = false;
+    check("any other key leaves it queued, not urgent", voiceState == V_IDLE && !d->urgent && d->inject == "check the logs");
+    d->inject = ""; voiceState = V_QUEUED; voiceQueuedAt = millis() - 13000;
+    loop();
+    check("the offer lapses by itself", voiceState == V_IDLE);
+    d->used = false; token = savedTok;
+  }
+
   // ---- "the active session" (voice, macros, stop) is the one whose hook reported last, not whichever polled last
   {
     auto withIdle = [&](int v, int idleA, int idleB) {

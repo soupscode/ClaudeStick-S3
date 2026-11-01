@@ -283,6 +283,92 @@ press(action="say", session="h1", text="also run the linter")
 o, _ = finish(start({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {}, "tool_response": {}}))
 check("text queued mid-run is delivered after the next tool", "also run the linter" in json.dumps(o or {}), o)
 
+# --- "send now": the next tool call is held back and the message handed over
+finish(start({"hook_event_name": "UserPromptSubmit", "prompt": "go"}, sid="p1"))
+press(action="say", session="p1", text="change of plan")
+o, _ = finish(start({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}, sid="p1"))
+check("a queued message doesn't hold up the next tool", o is None, o)
+press(action="sendnow", session="p1")
+o, _ = finish(start({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}, sid="p1"))
+hso = (o or {}).get("hookSpecificOutput", {})
+check("send now holds the next tool back and hands over the message", hso.get("permissionDecision") == "deny" and
+      "change of plan" in hso.get("permissionDecisionReason", ""), o)
+o, _ = finish(start({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}, sid="p1"))
+check("...once", o is None, o)
+
+# --- the idle-spell watcher: a Stop hook (async + asyncRewake) that wakes the session when text arrives
+wenv = dict(env, CLAUDESTICK_WATCH_POLL="0.3")
+
+
+def watcher(sid):
+    w = subprocess.Popen([sys.executable, HOOK, "--watch"], env=wenv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
+    w.stdin.write(json.dumps({"session_id": sid, "cwd": repo, "transcript_path": tp, "hook_event_name": "Stop"}))
+    w.stdin.close()
+    return w
+
+
+finish(start({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}, sid="w1"))
+w = watcher("w1")
+time.sleep(1.0)
+check("the watcher keeps running while nothing arrives", w.poll() is None)
+press(action="say", session="w1", text="please also check the logs")
+rc = w.wait(timeout=10)
+err = w.stderr.read()
+check("text from the Stick wakes it: exit code 2, the text on stderr", rc == 2 and "please also check the logs" in err and "ClaudeStick" in err, (rc, err))
+w = watcher("w1")
+time.sleep(0.8)
+finish(start({"hook_event_name": "UserPromptSubmit", "prompt": "next"}, sid="w1"))
+rc = w.wait(timeout=10)
+check("a new prompt makes it stand down quietly", rc == 0 and w.stderr.read() == "", rc)
+w_old = watcher("w1")
+time.sleep(0.8)
+w_new = watcher("w1")
+try:
+    old_rc = w_old.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    old_rc = None
+check("a newer watcher replaces the older one", old_rc is not None and w_new.poll() is None, (old_rc, w_new.poll()))
+finish(start({"hook_event_name": "SessionEnd"}, sid="w1"))
+try:
+    end_rc = w_new.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    end_rc = None
+check("the session ending stops its watcher", end_rc is not None, end_rc)
+w = watcher("w2")
+time.sleep(0.8)
+check("the watcher keeps a quiet session listed on the bridge", any(x["id"] == "w2" for x in snap()["sessions"]), snap()["sessions"])
+w.kill()
+w.wait()
+
+# --- the installer adds the watcher only where Claude Code can run it in the background
+def install_settings(extra, claude_version=None):
+    h = tempfile.mkdtemp()
+    e = dict(os.environ, HOME=h)
+    if claude_version:
+        fake = tempfile.mkdtemp()
+        open(fake + "/claude", "w").write(f"#!/bin/sh\necho '{claude_version} (Claude Code)'\n")
+        os.chmod(fake + "/claude", 0o755)
+        e["PATH"] = fake + os.pathsep + e["PATH"]
+    r = subprocess.run(["bash", "-c", f"curl -s http://127.0.0.1:{PORT}/install.py | python3 - --host 127.0.0.1 --port {PORT} --token {TOKEN} {extra}"],
+                       cwd=work, env=e, capture_output=True, text=True)
+    st = json.load(open(h + "/.claude/settings.json")) if os.path.exists(h + "/.claude/settings.json") else {}
+    stops = [x for g in st.get("hooks", {}).get("Stop", []) for x in g.get("hooks", [])]
+    return h, e, r, [x for x in stops if x.get("asyncRewake")]
+
+
+h1, e1, r1, wk = install_settings("", "2.1.200")
+check("install: a recent Claude Code gets the Stop watcher (async + asyncRewake, --watch)", len(wk) == 1 and wk[0].get("async") is True and
+      wk[0]["command"].endswith("--watch"), (wk, r1.stdout))
+check("install: it is the second Stop hook, next to the normal one", len(json.load(open(h1 + "/.claude/settings.json"))["hooks"]["Stop"]) == 2)
+r1b = subprocess.run(["bash", "-c", f"curl -s http://127.0.0.1:{PORT}/install.py | python3 - --uninstall"], cwd=work, env=e1, capture_output=True, text=True)
+check("uninstall removes it too", "asyncRewake" not in open(h1 + "/.claude/settings.json").read(), r1b.stdout + r1b.stderr)
+check("install: an old Claude Code doesn't (it would hold up every Stop)", not install_settings("", "2.0.5")[3])
+h3, e3, r3, wk3 = install_settings("", "no idea")   # a `claude` that doesn't say what version it is
+check("install: unknown version -> not installed, and it says how to ask for it", not wk3 and "--wake" in r3.stdout, r3.stdout)
+check("install: --wake installs it regardless", len(install_settings("--wake", "2.0.5")[3]) == 1)
+check("install: --no-wake skips it even on a recent version", not install_settings("--no-wake", "2.1.200")[3])
+
 # --- status line: plan limits and context % reach the bridge
 DATA = {"session_id": "h1", "workspace": {"current_dir": repo}, "context_window": {"used_percentage": 42.5, "context_window_size": 200000},
         "cost": {"total_cost_usd": 1.84}, "model": {"display_name": "Opus 5.5"},

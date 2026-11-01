@@ -3,6 +3,7 @@
 
   python3 install.py --host 192.168.1.50 --token abcd1234...   # install / update
   python3 install.py --host https://stick.example.com --pair 123456   # a bridge on the internet, with its one-time code
+  python3 install.py ... --wake       # also install the Stop hook that lets the Stick wake an idle session (default: if Claude Code is new enough)
   python3 install.py --test                                     # ping the device
   python3 install.py --uninstall
 
@@ -16,6 +17,8 @@ re-install, only --host/--token/--port are updated), and merges entries into
 import argparse
 import json
 import os
+import re
+import subprocess
 import shutil
 import sys
 import time
@@ -151,6 +154,34 @@ def exchange_pair_code(host, port, code):
         sys.exit(f"could not reach {url}: {e}")
 
 
+WAKE_MIN_VERSION = (2, 1, 154)   # first Claude Code version the async-rewake Stop hook was checked against
+
+
+def claude_version():
+    """(major, minor, patch) of the `claude` on PATH, or None if it can't be told."""
+    try:
+        out = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def want_wake(args):
+    """Should the idle-session watcher hook be installed? Yes if asked; by default only on a Claude Code
+    new enough to run it in the background (on an older one it would hold up every Stop)."""
+    if args.no_wake:
+        return False, "skipped (--no-wake)"
+    if args.wake:
+        return True, ""
+    v = claude_version()
+    if v is None:
+        return False, "not installed: couldn't tell which Claude Code version this is (add --wake to install it anyway)"
+    if v < WAKE_MIN_VERSION:
+        return False, f"not installed: Claude Code {'.'.join(map(str, v))} is older than {'.'.join(map(str, WAKE_MIN_VERSION))} (add --wake to force it)"
+    return True, ""
+
+
 def install(args):
     if args.pair:
         if args.token:
@@ -191,6 +222,12 @@ def install(args):
         add(ev, long_wait if ev == "PreToolUse" else 5)  # PreToolUse may show AskUserQuestion on the Stick
     add("PermissionRequest", long_wait)
     add("Stop", long_wait)
+    wake, why = want_wake(args)
+    if wake:   # keeps running after the turn ends and wakes an idle session when text arrives from the Stick
+        hooks.setdefault("Stop", []).append({"hooks": [{"type": "command", "command": cmd + " --watch", "async": True, "asyncRewake": True}]})
+        print("hook    -> Stop watcher: a message sent from the Stick can wake an idle session")
+    else:
+        print(f"hook    -> Stop watcher {why}")
 
     # Newer Claude models don't load the to-do tools unless asked; the Stick's
     # to-do view needs them. Only set it if you haven't chosen either way.
@@ -281,6 +318,8 @@ def main():
                    help="don't touch the status line (the Stick then can't show plan limits)")
     p.add_argument("--no-todo-tools", action="store_true",
                    help=f"don't set {TODO_ENV}=1 (the Stick's to-do view stays empty on newer models)")
+    p.add_argument("--wake", action="store_true", help="install the Stop hook that lets the Stick wake an idle session, whatever Claude Code version this is")
+    p.add_argument("--no-wake", action="store_true", help="don't install that Stop hook")
     p.add_argument("--port", type=int)
     p.add_argument("--uninstall", action="store_true")
     p.add_argument("--test", action="store_true")

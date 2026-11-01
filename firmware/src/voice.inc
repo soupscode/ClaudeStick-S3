@@ -10,9 +10,10 @@ static const size_t   VOICE_MAX  = VOICE_RATE * 20;          // 20 s cap
 static const size_t   VOICE_CHUNK = 1600;                    // 100 ms per mic read
 static int16_t* voiceBuf = nullptr;
 
-enum VoiceState : uint8_t { V_IDLE, V_REC, V_THINK, V_CONFIRM, V_ERROR };
+enum VoiceState : uint8_t { V_IDLE, V_REC, V_THINK, V_CONFIRM, V_ERROR, V_QUEUED };   // V_QUEUED: sent, waiting for Claude; A = send now
 static VoiceState voiceState = V_IDLE;
 static String     voiceText, voiceErr, voiceTarget;   // target = session id
+static uint32_t   voiceQueuedAt = 0;
 static uint32_t   voiceStopReq = 0;                   // Done/Question card it answers, if any
 static uint32_t   voiceApproval = 0;                  // approval it denies (with what you said), if any
 static uint32_t   voiceErrUntil = 0;
@@ -182,9 +183,14 @@ static void voiceSend() {
     for (auto& x : stops)
       if (x.used && x.id == voiceStopReq && x.result == -1) { x.custom = voiceText; x.result = -3; ok = true; }
   }
-  if (!ok) ok = deliverText(s, voiceText);
+  bool answeredCard = ok, hadCard = false;
+  if (!ok) {
+    if (s) for (auto& x : stops) if (x.used && x.result == -1 && x.session == s->id) hadCard = true;   // deliverText answers it
+    ok = deliverText(s, voiceText);
+  }
   if (ok) { noteStick(); beep(2); heartUntil = millis() + 1500; }
   else voiceFail("that session is gone");
-  if (ok) voiceState = V_IDLE;
+  // Text for a session that isn't waiting on a card is queued: say so, and offer to send it now.
+  if (ok) { voiceState = (!answeredCard && !hadCard) ? V_QUEUED : V_IDLE; voiceQueuedAt = millis(); }
   dirty = true;
 }

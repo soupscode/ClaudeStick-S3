@@ -9,7 +9,8 @@
 //   Approval card : A click approve · B click deny · A hold = answer at keyboard
 //   Macro menu    : B click next · A click send · B hold dismiss
 //   Question card : B click next option · A click answer · B hold answer at keyboard
-//   Lists         : B next · PWR (power button) previous · A select · B hold back
+//   Lists         : B next · tilt back/forward = up/down · A select · B hold back
+//                   (a tap on the power button switches the Stick off, so it is never used)
 //   Home          : A click next session · A hold session picker (pin) · B hold menu
 //   Long text     : tilt the Stick to scroll
 //   Phone         : http://<stick-ip>:7880/?t=<token>
@@ -51,7 +52,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.5";
+static const char*    FW_VERSION   = "0.9.6";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -92,6 +93,8 @@ struct Session {
   uint16_t planDone = 0;
   String   queued;             // bridge sessions: the message the bridge is holding for Claude's next step
   uint32_t activeAt = 0;       // bridge sessions: when the hook last reported anything (lastSeen is the last poll, the same for all)
+  bool     urgent = false;     // "send now" was pressed for the queued message: hand it over before the next tool runs
+  uint32_t watchAt = 0;        // a hook waiting out an idle spell last asked for text (keeps the session listed)
 };
 // The message waiting for Claude's next step: held here for a direct hook, on the bridge for a bridge session.
 static const String& queuedText(const Session& s) { return s.bridge ? s.queued : s.inject; }
@@ -732,10 +735,28 @@ static void hEvent() {
   out["stop"] = false; out["inject"] = nullptr;
   out["remote"] = remoteMode;
   if (s->used && (in["can_stop"] | false) && s->stopFlag) { out["stop"] = true; s->stopFlag = false; }
-  else if (s->used && (in["can_inject"] | false) && s->inject.length()) { out["inject"] = s->inject; s->inject = ""; }
+  else if (s->used && s->inject.length() && ((in["can_inject"] | false) || ((in["can_preempt"] | false) && s->urgent))) {
+    out["inject"] = s->inject; s->inject = ""; s->urgent = false;   // can_preempt: only for a message sent with "send now"
+  }
   sendJson(out);
   dirty = true;
   if (ev == "done" || ev == "waiting") touch();
+}
+
+// POST /watch {session, project?}: a hook waiting out an idle spell (Stop hook, async + asyncRewake) asks whether text
+// has arrived; it exits with code 2 to wake Claude when it has. Doesn't count as activity: lastSeen picks "the active session".
+static void hWatch() {
+  if (!authed()) return;
+  JsonDocument in; if (!readBody(in)) return;
+  String sid = in["session"] | "";
+  Session* s = sid.length() ? findSession(sid, false) : nullptr;
+  if (!s) noteSession(in, s);   // the Stick restarted since: list the session again
+  s->watchAt = millis();
+  JsonDocument out;
+  out["inject"] = nullptr; out["remote"] = remoteMode;
+  if (s->inject.length()) { out["inject"] = s->inject; s->inject = ""; s->urgent = false; }
+  sendJson(out);
+  dirty = true;
 }
 
 // POST /usage {session, ctx_pct?, ctx_size?, cost?, model?, five?:{pct,resets}, seven?:{pct,resets}}
@@ -881,7 +902,7 @@ static void hState() {
   for (auto& s : sessions) if (s.used) {
     JsonObject o = ss.add<JsonObject>();
     o["id"] = s.id; o["project"] = s.project; o["state"] = s.state; o["detail"] = s.detail;
-    if (queuedText(s).length()) o["queued"] = queuedText(s).substring(0, 60);
+    if (queuedText(s).length()) { o["queued"] = queuedText(s).substring(0, 60); if (s.urgent) o["urgent"] = true; }
     if (s.todoTotal) {
       JsonObject t = o["todo"].to<JsonObject>();
       t["done"] = s.todoDone; t["total"] = s.todoTotal; t["now"] = s.todoNow; t["skip"] = s.todoSkip;
@@ -948,7 +969,16 @@ static bool unqueue(Session* s) {
   if (!s) return false;
   if (s->bridge) return bridgeSessionAct(s, "unsend");
   if (!s->inject.length()) return false;
-  s->inject = "";
+  s->inject = ""; s->urgent = false;
+  return true;
+}
+
+// "Send now": hand the waiting message over at the very next hook call (before the next tool runs) rather than after it.
+static bool sendNow(Session* s) {
+  if (!s) return false;
+  if (s->bridge) return bridgeSessionAct(s, "sendnow");
+  if (!s->inject.length()) return false;
+  s->urgent = true;
   return true;
 }
 
@@ -996,13 +1026,14 @@ static void hAct() {
     else if (action == "dismiss") ok = stopResult(r, -2);
     else if (index >= 0 && index < r->nMacros) ok = stopResult(r, index);
     else ok = false;
-  } else if (action == "say" || action == "macro" || action == "stop" || action == "unsend") {
+  } else if (action == "say" || action == "macro" || action == "stop" || action == "unsend" || action == "sendnow") {
     Session* s = sid.length() ? findSession(sid, false) : targetSession();
     String text = action == "say" ? String((const char*)(in["text"] | "")) :
                   (action == "macro" && index >= 0 && index < nMacros) ? macros[index].text : String();
     if (!s) ok = false;
     else if (action == "stop") ok = sessionStop(s);
     else if (action == "unsend") ok = unqueue(s);
+    else if (action == "sendnow") ok = sendNow(s);
     else { if (action == "macro") tel.macroTaps++; ok = deliverText(s, text); }
   } else if (action == "pin") {
     pinned = sid.length() && findSession(sid, false) ? sid : String();
@@ -1087,6 +1118,7 @@ static void startHttp() {
   server.on("/act", HTTP_POST, hAct);
   server.on("/health", HTTP_GET, hHealth);
   server.on("/event", HTTP_POST, hEvent);
+  server.on("/watch", HTTP_POST, hWatch);
   server.on("/usage", HTTP_POST, hUsage);
   server.on("/permission", HTTP_POST, hPermissionNew);
   server.on("/permission", HTTP_GET, hPermissionPoll);
@@ -1105,7 +1137,7 @@ static void expireStale() {
   for (auto& r : stops)   // (cards from a bridge come and go with its state, see bridgeApply)
     if (r.used && !r.bridge && now - r.lastPoll > POLL_STALE_MS) { r.used = false; dirty = true; }
   for (int i = 0; i < MAX_SESSIONS; i++)
-    if (sessions[i].used && !sessions[i].bridge && now - sessions[i].lastSeen > 30UL * 60 * 1000) { sessions[i].used = false; dirty = true; }
+    if (sessions[i].used && !sessions[i].bridge && now - sessions[i].lastSeen > 30UL * 60 * 1000 && now - sessions[i].watchAt > 30UL * 60 * 1000) { sessions[i].used = false; dirty = true; }
   // A tie to a session that's gone (ended, expired, replaced) would make every other session's prompts skip.
   if (pinned.length() && !findSession(pinned, false)) { pinned = ""; dirty = true; }
 }
@@ -2129,7 +2161,7 @@ static int choiceLabels(StopReq* r, String* out) {
 
 static void drawChoice(StopReq* r) {
   bool q = r->kind == "question";
-  frame(q ? "question" : "done > next?", q ? C_CLAUDE : C_OK, "[B] next  [A] pick  [hold A] talk");
+  frame(q ? "question" : "done > next?", q ? C_CLAUDE : C_OK, q ? "[B] next [A] pick [hold B] keyboard" : "[B] next [A] pick [hold B] dismiss");
   txt("@" + fit(r->project, charsAt(TOP + 2) - 1), PANE_X, TOP + 2, C_DIM);
   int used = textBlock(q ? r->title : r->last, TOP + 2 + LINE_H, q ? 4 : 3, q ? C_FG : C_DIM, true);
   int y = max(TOP + 6 + (used + 1) * LINE_H, petLayout ? 0 : CORNER_ROWS_Y + 4);
@@ -2139,14 +2171,18 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_SENDNOW, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
   int n = 0;
   auto add = [&](MenuItem k, int arg, const String& l) { e[n] = { k, arg }; labels[n] = l; n++; };
   add(MI_STOP, 0, "stop now");
-  { Session* qs = targetSession(); if (qs && queuedText(*qs).length()) add(MI_UNQUEUE, 0, "cancel queued msg"); }
+  { Session* qs = targetSession();
+    if (qs && queuedText(*qs).length()) {
+      if (!qs->urgent) add(MI_SENDNOW, 0, "send queued msg now");
+      add(MI_UNQUEUE, 0, "cancel queued msg");
+    } }
   { Session* ts = targetSession(); bool br = ts && ts->bridge;   // a bridge session uses the bridge's macros
     for (int i = 0, m = br ? nBridgeMacro : nMacros; i < m; i++) add(MI_MACRO, i, "> " + (br ? bridgeMacro[i] : macros[i].label)); }
   add(MI_REMOTE, 0, String("remote: ") + remoteName(conf.remote) + (conf.remote == 2 ? (remoteMode ? " (on)" : " (off)") : ""));
@@ -2168,7 +2204,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
 
 static void drawActions() {
   Session* s = targetSession();
-  frame("menu", C_CLAUDE, "[B] next  [P] up  [A] ok");
+  frame("menu", C_CLAUDE, "[B] next  [tilt] up  [A] ok");
   txt(s ? ("-> " + fit(sessionLabel(*s), charsAt(TOP + 2) - 3)) : String("no cli session"), PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS]; MenuEntry ents[MAX_ITEMS];
   int n = menuEntries(ents, labels);
@@ -2185,7 +2221,7 @@ static void drawHelp() {
   line("[hold B] at keyboard");
   y += 3;
   line("[B] next  [A] pick");
-  line("[P] up  [hold B] back");
+  line("[tilt] up/down  [hold B] back");
   y += 3;
   line("[A] details  [B] menu");
   line("[hold A] talk", C_CLAUDE);
@@ -2196,11 +2232,10 @@ static void drawTest() {
   frame("hardware test", C_BLUE, "[A] beep  [hold B] back");
   int y = TOP + 2;
   auto line = [&](const String& s, uint16_t c) { txt(fit(s, PANE_CHARS), PANE_X, y, c); y += LINE_H; };
-  bool a = M5.BtnA.isPressed(), b = M5.BtnB.isPressed(), p = M5.BtnPWR.isPressed();
+  bool a = M5.BtnA.isPressed(), b = M5.BtnB.isPressed();
   txt("A", PANE_X, y, a ? C_BG : C_FG, a ? C_OK : C_BG);
   txt("B", PANE_X + 18, y, b ? C_BG : C_FG, b ? C_OK : C_BG);
-  txt("PWR", PANE_X + 36, y, p ? C_BG : C_FG, p ? C_OK : C_BG);
-  txt("<- press", PANE_X + 64, y, C_DIM); y += LINE_H + 2;
+  txt("<- press", PANE_X + 40, y, C_DIM); y += LINE_H + 2;
   float ax = 0, ay = 0, az = 0;
   bool imu = M5.Imu.getAccel(&ax, &ay, &az);
   line(imu ? "accel " + String(ax, 2) + " " + String(ay, 2) + " " + String(az, 2) : String("imu: no data"), imu ? C_FG : C_BAD);
@@ -2268,6 +2303,16 @@ static void drawVoiceCard() {
   textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H * (idle ? 2 : 1), idle ? 9 : 10, C_FG, true);
 }
 
+// Sent, but the session is busy or between turns: the message waits for its next step. A sends it now.
+static void drawQueuedCard() {
+  Session* s = findSession(voiceTarget, false);
+  frame("queued", C_CLAUDE, "[A] send now  [B] keep queued");
+  txt("@" + fit(s ? sessionLabel(*s) : String("?"), charsAt(TOP + 2) - 1), PANE_X, TOP + 2, C_DIM);
+  hrule(TOP + 2 + LINE_H);
+  txt(fit("goes in at Claude's next step", charsAt(TOP + 6 + LINE_H)), PANE_X, TOP + 6 + LINE_H, C_CLAUDE);
+  textBlock("\"" + voiceText + "\"", TOP + 6 + LINE_H * 2, 8, C_FG, true);
+}
+
 static void drawVoiceRec(uint32_t ms) {
   layout(false);
   spr.fillScreen(C_BG);
@@ -2301,7 +2346,7 @@ static int sessionItems(String* labels, String* marks, String* ids) {
 
 // Buddy picker: the full-size species. It also shows on the idle home screen.
 static void drawPet() {
-  frame("buddy", C_CLAUDE, "[B] next  [P] prev  [A] back");
+  frame("buddy", C_CLAUDE, "[B] next  [tilt] prev  [A] back");
   int y = TOP + 6;
   spr.setTextSize(2); txt(buddySpeciesName(), PANE_X, y, C_CLAUDE); spr.setTextSize(1);
   y += 22;
@@ -2312,7 +2357,7 @@ static void drawPet() {
 }
 
 static void drawSessions() {
-  frame("tie to session", C_BLUE, "[B] next  [P] up  [A] pin");
+  frame("tie to session", C_BLUE, "[B] next  [tilt] up  [A] pin");
   txt("* = stick answers these", PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS], marks[MAX_ITEMS], ids[MAX_ITEMS];
   int n = sessionItems(labels, marks, ids);
@@ -2394,10 +2439,10 @@ static void drawSetup() {
   }
 }
 
-// Session details: to-do list and token usage. B / PWR switch session.
+// Session details: to-do list and token usage. B switches session.
 static void drawDetail() {
   Session* s = targetSession();
-  frame("session", C_BLUE, "[B/P] next  [A] back  [hold A] talk");
+  frame("session", C_BLUE, "[B] next  [A] back  [hold A] talk");
   if (!s) { txt("no claude session yet", PANE_X, TOP + 20, C_DIM); return; }
   int y = TOP + 2;
   String st = s->state;
@@ -2503,7 +2548,7 @@ static void drawHome() {
       txt(String(SPIN[(now / 200) % 4]), PANE_X, y, sc);
     } else spr.fillRect(PANE_X, y + 1, 4, 6, sc);
     const bool queued = queuedText(s).length() > 0;
-    String st = s.stopFlag ? "stop.." : queued ? "msg.." : s.state;
+    String st = s.stopFlag ? "stop.." : queued ? (s.urgent ? "now.." : "msg..") : s.state;
     if (!s.stopFlag && !queued && (active || s.state == "done") && now - s.stateSince >= 3000)
       st += " " + fmtAge(now - s.stateSince);
     String head = sessionLabel(s);
@@ -2543,7 +2588,7 @@ static void draw() {
   Approval* a = topApproval();
   StopReq* r = topStop();
   uint32_t key = pk ? 1 : a ? a->id : r ? r->id : 0;
-  if (voiceState == V_CONFIRM && !pk) key = 0x7FFFFFFF;
+  if ((voiceState == V_CONFIRM || voiceState == V_QUEUED) && !pk) key = 0x7FFFFFFF;
   else if (!pk && !a && !r && screen == SCR_HOME && updatePromptDue()) key = 0x7FFFFFFE;
   else if (!pk && !a && !r && screen == SCR_DETAIL) {
     Session* t = targetSession();
@@ -2553,6 +2598,7 @@ static void draw() {
 
   if (pk) drawPasskey(pk);
   else if (voiceState == V_CONFIRM || voiceState == V_ERROR) drawVoiceCard();   // finish what you said first
+  else if (voiceState == V_QUEUED) drawQueuedCard();
   else if (a) drawApproval(a);
   else if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) drawNotice();
   else if (r) drawChoice(r);
@@ -2574,10 +2620,11 @@ static void draw() {
 
 // Tilt to scroll long text: baseline is taken when a card appears, then each
 // ~0.3 g of forward/back tilt scrolls one line every 250 ms.
+static bool navActive = false;   // tilt is moving a menu selection (see tiltNavTick), so it doesn't scroll text too
 static void tiltTick() {
   static uint32_t last = 0, lastKey = 0;
   static float base = 0;
-  if (!tiltMode || !scrollKey || millis() - last < 250) return;
+  if (!tiltMode || !scrollKey || navActive || millis() - last < 250) return;
   last = millis();
   float ax, ay, az;
   if (!M5.Imu.getAccel(&ax, &ay, &az)) return;
@@ -2646,6 +2693,45 @@ static void doubleTimeout() {
   if (a && a->id == aFirstId) singleA(a);
 }
 
+// Tilt to move through menus: tilt back = previous, forward = next (B still goes next too). A tap on the
+// power button switches the Stick off, so it can't be a "previous" key. One step per tilt; keep it tilted
+// and it repeats. The resting angle follows slowly, so a changed posture stops counting after a few seconds.
+// The numbers are a first guess, not tuned on hardware.
+struct TiltNav { float base = 0; bool have = false, armed = true; uint32_t heldSince = 0, lastStep = 0; };
+static const float    TN_STEP = 0.30f, TN_REARM = 0.15f, TN_DRIFT = 0.01f;   // g
+static const uint32_t TN_REPEAT_AFTER = 700, TN_REPEAT_EVERY = 400;          // ms
+static int tiltNavStep(TiltNav& t, float ax, uint32_t now, float dir) {   // -1 previous, +1 next, 0 nothing
+  if (!t.have) { t.base = ax; t.have = true; return 0; }
+  float d = (ax - t.base) * dir, mag = fabsf(d);
+  int step = 0;
+  if (t.armed && mag >= TN_STEP) { step = d > 0 ? 1 : -1; t.armed = false; t.heldSince = t.lastStep = now; }
+  else if (!t.armed && mag >= TN_STEP && now - t.heldSince >= TN_REPEAT_AFTER && now - t.lastStep >= TN_REPEAT_EVERY) { step = d > 0 ? 1 : -1; t.lastStep = now; }
+  else if (!t.armed && mag < TN_REARM) t.armed = true;
+  t.base += (ax - t.base) * TN_DRIFT;
+  return step;
+}
+
+// Screens where the selection moves with tilt: lists and cards with options, never an approval (those text scroll).
+static bool navScreen() {
+  if (dimmed || voiceState != V_IDLE || topApproval()) return false;
+  if (topStop()) return true;
+  if (screen == SCR_HOME) return setupDone && updatePromptDue();
+  return screen == SCR_ACTIONS || screen == SCR_SESSIONS || screen == SCR_PET;
+}
+
+static int tiltNavTick() {
+  static TiltNav t;
+  static uint32_t last = 0;
+  navActive = tiltMode != 0 && navScreen();
+  if (!navActive) { t = TiltNav(); return 0; }
+  uint32_t now = millis();
+  if (now - last < 100) return 0;
+  last = now;
+  float ax, ay, az;
+  if (!M5.Imu.getAccel(&ax, &ay, &az)) return 0;
+  return tiltNavStep(t, ax, now, tiltMode * (flipped ? -1.0f : 1.0f));
+}
+
 static void cycleSession(int dir) {
   for (int k = 1; k <= MAX_SESSIONS; k++) {
     int i = (focusSession + dir * k + 2 * MAX_SESSIONS) % MAX_SESSIONS;
@@ -2656,22 +2742,26 @@ static void cycleSession(int dir) {
 static void buttons() {
   bool aClick = M5.BtnA.wasClicked(), aHold = M5.BtnA.wasHold();
   bool bClick = M5.BtnB.wasClicked(), bHold = M5.BtnB.wasHold();
-  bool pClick = M5.BtnPWR.wasClicked();
+  int tn = tiltNavTick();               // -1 tilted back (previous), +1 forward (next), 0 none
   doubleTimeout();
-  if (!(aClick || aHold || bClick || bHold || pClick)) return;
+  if (!(aClick || aHold || bClick || bHold || tn)) return;
 
   if (dimmed) { touch(); return; }      // first press only wakes the screen
   touch();
   if (screen == SCR_TEST) {             // buttons light up on screen; only these do anything
     if (bHold) screen = SCR_HOME;
     else if (aClick) beep(1);
-    else if (pClick) beep(2);
     return;
   }
-  if (setupDone) noteStick();           // answering on the Stick = you're remote (auto mode)
+  if (setupDone && (aClick || aHold || bClick || bHold)) noteStick();   // answering on the Stick = you're remote (auto mode); tilting a menu isn't
 
   // Voice result first: an approval that arrives while you're reading it waits.
   if (voiceState == V_ERROR) { voiceState = V_IDLE; return; }
+  if (voiceState == V_QUEUED) {   // A sends the queued message now; any other key leaves it queued
+    voiceState = V_IDLE; dirty = true;
+    if (aClick) beep(sendNow(findSession(voiceTarget, false)) ? 2 : 0);
+    return;
+  }
   if (voiceState == V_CONFIRM) {
     if (aClick) voiceSend();
     else if (bClick || bHold) { voiceState = V_IDLE; voiceApproval = 0; beep(0); }
@@ -2699,15 +2789,15 @@ static void buttons() {
       else notice("voice", "voice replies work with claude code (cli) sessions", C_DIM, 2500);
     }
     else if (bClick) { aFirstAt = 0; decide(a, D_DENY); }
-    else if ((bHold || pClick) && a->src == SRC_WIFI) { aFirstAt = 0; decide(a, D_SKIP); }   // answer at the keyboard
+    else if (bHold && a->src == SRC_WIFI) { aFirstAt = 0; decide(a, D_SKIP); }   // answer at the keyboard
     return;
   }
 
-  if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) { noticeUntil = 0; return; }
+  if (noticeUntil && (int32_t)(millis() - noticeUntil) < 0) { if (aClick || aHold || bClick || bHold) noticeUntil = 0; return; }   // a tilt doesn't dismiss it
 
   if (StopReq* r = topStop()) {
     int total = r->nMacros + 1;
-    listNav(total, bClick, pClick);
+    listNav(total, bClick || tn > 0, tn < 0);
     if (aHold) { voiceCapture(r); return; }
     if (bHold || (aClick && menuIdx == total - 1)) { if (stopResult(r, -2)) { menuIdx = 0; beep(0); } }
     else if (aClick) { if (stopResult(r, menuIdx)) { menuIdx = 0; beep(2); } }
@@ -2715,7 +2805,7 @@ static void buttons() {
   }
 
   if (screen == SCR_HOME && setupDone && updatePromptDue()) {
-    listNav(3, bClick, pClick);
+    listNav(3, bClick || tn > 0, tn < 0);
     if (bHold) { upd.remindAt = millis() + 24UL * 3600 * 1000; menuIdx = 0; beep(0); return; }
     if (!aClick) return;
     if (menuIdx == 0) { menuIdx = 0; installUpdate(); }
@@ -2729,7 +2819,7 @@ static void buttons() {
     String labels[MAX_ITEMS]; MenuEntry ents[MAX_ITEMS];
     int total = menuEntries(ents, labels);
     Session* s = targetSession();
-    listNav(total, bClick, pClick);
+    listNav(total, bClick || tn > 0, tn < 0);
     if (bHold) { screen = SCR_HOME; menuIdx = 0; return; }
     MenuEntry e = ents[menuIdx];
     if (aHold && e.kind == MI_TOKEN) {
@@ -2742,6 +2832,7 @@ static void buttons() {
     if (!aClick) return;
     switch (e.kind) {
       case MI_STOP:   if (s && sessionStop(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
+      case MI_SENDNOW: if (s && sendNow(s)) beep(2); screen = SCR_HOME; menuIdx = 0; break;
       case MI_UNQUEUE: if (s && unqueue(s)) beep(3); screen = SCR_HOME; menuIdx = 0; break;
       case MI_MACRO:  if (s) { tel.macroTaps++; if (s->bridge ? bridgeSessionAct(s, "macro", e.arg) : deliverText(s, macros[e.arg].text)) beep(2); }
                       screen = SCR_HOME; menuIdx = 0; break;
@@ -2769,7 +2860,7 @@ static void buttons() {
   if (screen == SCR_SESSIONS) {
     String labels[MAX_ITEMS], marks[MAX_ITEMS], ids[MAX_ITEMS];
     int total = sessionItems(labels, marks, ids);
-    listNav(total, bClick, pClick);
+    listNav(total, bClick || tn > 0, tn < 0);
     if (bHold) { screen = SCR_HOME; menuIdx = 0; }
     else if (aClick) {
       pinned = ids[menuIdx];
@@ -2784,8 +2875,8 @@ static void buttons() {
   if (screen == SCR_INFO || screen == SCR_HELP) { screen = SCR_HOME; return; }
 
   if (screen == SCR_PET) {
-    if (bClick) prefs.putUChar("buddy", buddyNextSpecies());
-    else if (pClick) { uint8_t i = (buddySpeciesIdx() + buddySpeciesCount() - 1) % buddySpeciesCount(); buddySetSpeciesIdx(i); prefs.putUChar("buddy", i); }
+    if (bClick || tn > 0) prefs.putUChar("buddy", buddyNextSpecies());
+    else if (tn < 0) { uint8_t i = (buddySpeciesIdx() + buddySpeciesCount() - 1) % buddySpeciesCount(); buddySetSpeciesIdx(i); prefs.putUChar("buddy", i); }
     else { screen = SCR_ACTIONS; beep(0); }           // A or hold B: back to the menu
     return;
   }
@@ -2793,7 +2884,6 @@ static void buttons() {
   if (screen == SCR_DETAIL) {
     if (aHold) voiceCapture(nullptr);                 // talk to the session you're looking at
     else if (bClick) cycleSession(1);
-    else if (pClick) cycleSession(-1);
     else { screen = SCR_HOME; beep(0); }            // A or hold B: back
     return;
   }
@@ -2931,6 +3021,7 @@ void loop() {
   buttons();
   tiltTick();
   motionWakeTick();
+  if (voiceState == V_QUEUED && millis() - voiceQueuedAt > 12000) { voiceState = V_IDLE; dirty = true; }   // the offer lapses; it stays queued
 
   // alert sounds for newly surfaced prompts, plus a gentle reminder
   Approval* a = topApproval();

@@ -76,7 +76,7 @@ def nid():
 
 def session(body):
     sid = body.get("session", "unknown")
-    s = S["sessions"].setdefault(sid, {"project": sid[:8], "state": "", "detail": "", "stop": False, "inject": ""})
+    s = S["sessions"].setdefault(sid, {"project": sid[:8], "state": "", "detail": "", "stop": False, "inject": "", "urgent": False})
     if body.get("project"):
         s["project"] = body["project"]
     s["seen"] = time.time()
@@ -88,7 +88,7 @@ def deliver(sid, text):
     if pend:
         pend[0]["custom"], pend[0]["result"] = text, "custom"
     elif sid in S["sessions"]:
-        S["sessions"][sid]["inject"] = text
+        S["sessions"][sid]["inject"], S["sessions"][sid]["urgent"] = text, False
     else:
         return False
     return True
@@ -124,7 +124,7 @@ def act(b):
             else:
                 return False
             return True
-        if a in ("say", "macro", "stop", "unsend"):
+        if a in ("say", "macro", "stop", "unsend", "sendnow"):
             sid = b.get("session") or max(S["sessions"], key=lambda k: S["sessions"][k].get("seen", 0), default=None)
             if sid not in S["sessions"]:
                 return False
@@ -132,7 +132,12 @@ def act(b):
                 S["sessions"][sid]["stop"] = True
                 return True
             if a == "unsend":
-                S["sessions"][sid]["inject"] = ""
+                S["sessions"][sid]["inject"], S["sessions"][sid]["urgent"] = "", False
+                return True
+            if a == "sendnow":
+                if not S["sessions"][sid].get("inject"):
+                    return False
+                S["sessions"][sid]["urgent"] = True
                 return True
             m = CONF["macros"]
             text = b.get("text", "") if a == "say" else (m[idx]["text"] if 0 <= idx < len(m) else "")
@@ -225,6 +230,7 @@ class H(BaseHTTPRequestHandler):
                     "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"],
                                   **({"todo": v["todo"]} if v.get("todo", {}).get("total") else {}),
                                   **({"queued": v["inject"][:60]} if v.get("inject") else {}),
+                                  **({"urgent": True} if v.get("inject") and v.get("urgent") else {}),
                                   **({"usage": v["usage"]} if v.get("usage") else {}),
                                   **({"ctx_pct": v["u_ctx_pct"]} if "u_ctx_pct" in v else {}),
                                   **({"model_name": v["u_model"]} if "u_model" in v else {})}
@@ -375,6 +381,16 @@ class H(BaseHTTPRequestHandler):
             S["ota_bytes"] = len(b.get("_raw", b""))
             print(f"[ota] received {S['ota_bytes']} bytes")
             return self.reply({"ok": True})
+        if p == "/watch":   # a hook waiting out an idle spell: has text arrived? (doesn't count as activity)
+            with LOCK:
+                sid = b.get("session", "unknown")
+                s = S["sessions"].get(sid)
+                if s is None:
+                    sid, s = session(b)
+                out = {"inject": None, "remote": remote_now()}
+                if s["inject"]:
+                    out["inject"], s["inject"], s["urgent"] = s["inject"], "", False
+                return self.reply(out)
         with LOCK:
             sid, s = session(b)
             S["log"].append((p, b))
@@ -399,8 +415,8 @@ class H(BaseHTTPRequestHandler):
                 out = {"stop": False, "inject": None, "remote": remote_now()}
                 if b.get("can_stop") and s["stop"]:
                     out["stop"], s["stop"] = True, False
-                elif b.get("can_inject") and s["inject"]:
-                    out["inject"], s["inject"] = s["inject"], ""
+                elif (b.get("can_inject") or (b.get("can_preempt") and s.get("urgent"))) and s["inject"]:
+                    out["inject"], s["inject"], s["urgent"] = s["inject"], "", False
                 return self.reply(out)
             if p == "/usage":
                 S.setdefault("limits", {})

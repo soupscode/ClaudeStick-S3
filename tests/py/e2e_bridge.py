@@ -401,6 +401,40 @@ check("...and the state stops showing it", "queued" not in [x for x in state()["
 check("unsend with nothing queued is harmless", press("unsend", session="s1")[0] == 200)
 check("unsend for an unknown session -> 404", press("unsend", session="ghost")[0] == 404)
 
+# send now: a queued message jumps ahead of the next tool call
+press("say", session="s1", text="stop and look at this")
+check("a queued message isn't handed over before a tool runs", post("/event", {**HOOK, "event": "tool", "can_stop": True, "can_preempt": True})[1]["inject"] is None)
+check("send now with nothing queued -> 404", press("sendnow", session="s2")[0] == 404)
+check("send now marks it urgent in the state", press("sendnow", session="s1")[0] == 200 and
+      [x for x in state()["sessions"] if x["id"] == "s1"][0].get("urgent") is True)
+j = post("/event", {**HOOK, "event": "tool", "can_stop": True, "can_preempt": True})[1]
+check("...then the next tool call gets it", j["inject"] == "stop and look at this", j)
+check("...once, and the urgent flag is gone", post("/event", {**HOOK, "event": "working", "can_inject": True})[1]["inject"] is None and
+      "urgent" not in [x for x in state()["sessions"] if x["id"] == "s1"][0])
+press("say", session="s1", text="new text")
+press("sendnow", session="s1")
+press("say", session="s1", text="replacement")
+check("a newer message isn't urgent unless you say so", post("/event", {**HOOK, "event": "tool", "can_stop": True, "can_preempt": True})[1]["inject"] is None)
+press("unsend", session="s1")
+press("say", session="s1", text="x"); press("sendnow", session="s1"); press("unsend", session="s1")
+check("unsend clears urgency too", post("/event", {**HOOK, "event": "tool", "can_preempt": True})[1]["inject"] is None)
+
+# watch: a hook waiting out an idle spell picks text up, without counting as activity
+press("say", session="s1", text="wake up")
+idle0 = [x for x in state()["sessions"] if x["id"] == "s1"][0]["idle_s"]
+clock.t += 5
+check("watch hands over queued text once", post("/watch", {"session": "s1", "project": "p"})[1].get("inject") == "wake up" and
+      post("/watch", {"session": "s1"})[1].get("inject") is None)
+idle1 = [x for x in state()["sessions"] if x["id"] == "s1"][0]["idle_s"]
+check("...and doesn't make the session look active", idle1 >= idle0 + 5, (idle0, idle1))
+clock.t += br.SESSION_IDLE_S - 100
+post("/watch", {"session": "s1"})
+clock.t += 200
+check("...but keeps an idle session listed", any(x["id"] == "s1" for x in state()["sessions"]))
+check("watch for an unknown session lists it", post("/watch", {"session": "fresh-one", "project": "fresh"})[1].get("inject") is None and
+      any(x["id"] == "fresh-one" for x in state()["sessions"]))
+post("/event", {"session": "fresh-one", "event": "end"})
+
 # which session was active last: idle_s counts from each hook's last report
 post("/event", {"session": "idle-a", "project": "a", "event": "working"})
 clock.t += 6

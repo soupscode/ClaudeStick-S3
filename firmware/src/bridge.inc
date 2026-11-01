@@ -198,6 +198,7 @@ static void bridgeApply(JsonDocument& d) {
       s->model = (const char*)(u["model"] | "");
     }
     s->queued = (const char*)(o["queued"] | "");
+    s->urgent = s->queued.length() && (o["urgent"] | false);
     s->ctxPct = o["ctx_pct"].is<float>() ? o["ctx_pct"].as<float>() : -1;
     s->modelName = (const char*)(o["model_name"] | "");
   }

@@ -4,16 +4,16 @@ Everything after [installing](../README.md#install): the buttons, approvals, rem
 
 ## The buttons
 
-**A** is the front button, **B** the side button, **P** the power button (short press); *hold* is about 0.7 s and *2x* a double-press within 0.35 s. Hold A is always **talk**.
+**A** is the front button and **B** the side button; *hold* is about 0.7 s and *2x* a double-press within 0.35 s. Hold A is always **talk**. The power button isn't used: a tap on it switches the Stick off. In menus and lists, **tilt the Stick back to go up and forward to go down** (B also goes down).
 
-| Screen | A | 2x A | hold A | B | hold B | P |
+| Screen | A | 2x A | hold A | B | hold B | tilt |
 |---|---|---|---|---|---|---|
-| Approval | allow | **always allow** | **deny + say why** | deny | **answer at keyboard** | answer at keyboard |
-| Approval, **danger** (red) | hint only | allow once | deny + say why | deny | answer at keyboard | answer at keyboard |
-| Question / Done menu | pick | | **talk** | next | dismiss | previous |
+| Approval | allow | **always allow** | **deny + say why** | deny | **answer at keyboard** | scrolls long text |
+| Approval, **danger** (red) | hint only | allow once | deny + say why | deny | answer at keyboard | scrolls long text |
+| Question / Done menu | pick | | **talk** | next | **dismiss** (Done) / answer at keyboard (Question) | up / down |
 | Home | **session details** | | **talk to Claude** | menu | menu | |
-| Session details | back | | talk to this session | next session | back | previous session |
-| Menu / lists | select | | | next | back | previous |
+| Session details | back | | talk to this session | next session | back | scrolls the to-do list |
+| Menu / lists | select | | | next | back | up / down |
 | Voice result | send | | redo | discard | discard | |
 
 On cards that offer *always allow*, a single A waits 0.35 s to see whether a second press follows. A hint bar along the bottom always shows what the buttons do right now. **Menu → button help** lists them on the device.
@@ -23,7 +23,7 @@ On cards that offer *always allow*, a single A waits 0.35 s to see whether a sec
 - **Always allow** remembers a rule that fits: `Bash(git status *)` for this project, auto-accept edits for the session, a `WebFetch` domain, or an MCP tool. The card's last line shows exactly what will be remembered. It is never offered for compound shell commands or dangerous ones.
 - **Danger cards** (red border) cover `rm -rf`, force pushes, `git reset --hard`, `zfs`/`zpool destroy`, `pct`/`qm destroy`, `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`, stopping SSH or network services, and edits to `/etc`, `~/.ssh` or `.env`. These are heuristics, not a security boundary. Review `.claude/settings.local.json` now and then.
 - **Deny + say why:** hold A, say what Claude should do instead, press A. Claude gets the denial with your words. The phone has a matching **Deny + note** button.
-- **Edits** show a red/green diff. Long text and long lists scroll when you tilt the Stick: it takes its angle when the card appears, then tilting about 15-20° forward or back scrolls a line every quarter second. That is all tilt does; it isn't a controller. If it scrolls the wrong way, run `tilt flip` in the flasher's console (or untick *tilt to scroll* in settings).
+- **Edits** show a red/green diff. Long text and long lists scroll when you tilt the Stick: it takes its angle when the card appears, then tilting about 15-20° forward or back scrolls a line every quarter second. That is all tilt does; it isn't a controller. If it scrolls the wrong way, run `tilt flip` in the flasher's console (or untick *tilt to scroll* in settings, which also turns off tilting through menus). In menus and on Done cards the same tilt moves the selection instead: back is up, forward is down, one step per tilt, and it repeats if you keep it tilted. The numbers behind both are first guesses until they've been tried on a real Stick.
 
 ## Remote mode
 
@@ -49,7 +49,15 @@ Every terminal with the hooks shows up on Home as `folder@branch` (set `CLAUDEST
 
 Hold A, speak (up to 20 s), release, review the text, press A to send. The review screen shows which session it goes to (`@folder@branch`): that is the session that reported most recently, or the one you tied the Stick to (**menu → tie to session**). It answers a pending Done/Question card, otherwise Claude gets it after its current step.
 
-**Messages and macros wait for Claude's next step.** Claude Code only runs the hooks while it is working, so a message can't be typed into a session that is sitting idle at its prompt: it waits, and Claude sees it as "a new instruction from your ClaudeStick" on its next step (or when its turn ends). A waiting message shows as `msg..` in the session list and as `queued: ...` on the session's line; the phone page shows it with a **Cancel** button, and **menu → cancel queued msg** takes it back. The voice review screen says `idle` when the session isn't working. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works; [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network is a good choice, and `Systran/faster-whisper-small` is fine on a CPU. Set the URL under **settings → voice**. Use whatever model name your server expects: servers built on faster-whisper usually want a Hugging Face id such as `Systran/faster-whisper-small`, while servers that imitate OpenAI take `whisper-1` (the default). With a [bridge](REMOTE.md) the speech server is set on the bridge's settings page instead, and the Stick never talks to it directly.
+**Messages and macros are queued.** After you send a voice message, the Stick says `queued` and offers **[A] send now** (any other key leaves it queued). A queued message reaches Claude in one of three ways:
+
+- **Queued (the default):** after Claude's current step (or when its turn ends), as "a new instruction from your ClaudeStick".
+- **Send now:** before Claude's *next* tool call: that call is held back and Claude gets your message instead. It can't interrupt a tool that is already running (Claude Code gives hooks no way to do that); *stop now* has the same limit.
+- **While Claude isn't working** (its turn ended, or it is waiting on background tasks): the installer adds a Stop hook that keeps running in the background and wakes the session when your message arrives, within a couple of seconds. It needs a recent Claude Code; the installer checks (`--wake` forces it, `--no-wake` skips it) and you have to re-run the install command and restart the session once. That wake-up hasn't been tried against a real Claude Code yet.
+
+A waiting message shows as `msg..` in the session list (`now..` once you've pressed send now) and as `queued: ...` on the session's line. The phone page shows it with **Send now** and **Cancel** buttons; **menu → send queued msg now** and **menu → cancel queued msg** do the same on the Stick. The voice review screen says `idle` when the session isn't working.
+
+A session that hasn't reported for 30 minutes drops off the bridge's list, unless that background hook is keeping it listed, so voice can't go to a session you left idle for longer than that without it. Any OpenAI-compatible `/v1/audio/transcriptions` endpoint works; [speaches](https://github.com/speaches-ai/speaches) (faster-whisper) on any machine on your network is a good choice, and `Systran/faster-whisper-small` is fine on a CPU. Set the URL under **settings → voice**. Use whatever model name your server expects: servers built on faster-whisper usually want a Hugging Face id such as `Systran/faster-whisper-small`, while servers that imitate OpenAI take `whisper-1` (the default). With a [bridge](REMOTE.md) the speech server is set on the bridge's settings page instead, and the Stick never talks to it directly.
 
 ## Phone page
 

@@ -999,9 +999,17 @@ def on_event(dev, ev, cfg):
         tool = ev.get("tool_name", "")
         r = dev.call("POST", "/event", {**body, "event": "tool",
                                         "detail": f"{tool}: {describe_tool(tool, ev.get('tool_input'))}",
-                                        "can_stop": True}, timeout=0.8)
+                                        "can_stop": True, "can_preempt": True}, timeout=0.8)
         if r and r.get("stop"):
             emit({"continue": False, "stopReason": "Stopped from ClaudeStick."})
+        elif r and r.get("inject"):   # "send now" on the Stick: hand it over before this step runs
+            emit({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "The user sent you a message from their ClaudeStick and asked for it to be delivered right now, "
+                                            "so this step was held back. Read the message and act on it first; run this step afterwards "
+                                            "only if it still makes sense. Message: " + str(r["inject"]),
+            }})
         elif r and r.get("remote") and tool == "AskUserQuestion" and cfg.get("questions_on_device", True):
             on_question(dev, ev, cfg, body)
     elif name == "PostToolUse":
@@ -1029,12 +1037,117 @@ def on_event(dev, ev, cfg):
             notify(cfg, f"Claude needs you ({body['project']})", ev.get("message", ""))
     elif name == "SessionEnd":
         dev.call("POST", "/event", {**body, "event": "end"})
+        stop_watcher(body["session"])
         prune_sessions()
 
 
 # Events where a short extra delay is acceptable: re-read settings, and look for the
 # Stick at a new IP if it stopped answering. Tool events stay fast.
 SLOW_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"}
+
+
+# ------------------------------------------------------------------ waiting out an idle spell
+# Claude Code only runs hooks while it works, so text sent from the Stick to a session that has finished
+# its turn (or is waiting on background tasks) would never arrive. The installer adds a second Stop hook,
+# `--watch`, flagged async + asyncRewake: it keeps running in the background after the turn ends, asks
+# the Stick/bridge every couple of seconds whether text has arrived, and exits with code 2 when it has,
+# which wakes Claude with the text. A new prompt, the session ending or Claude Code going away stops it.
+WATCH_POLL_S = float(os.environ.get("CLAUDESTICK_WATCH_POLL", "2.0"))   # (the override is for tests)
+WATCH_MAX_S = 12 * 3600
+
+
+def _side_path(session, ext):
+    return _sess_path(session)[:-len(".json")] + ext
+
+
+def _turn(session):
+    try:
+        with open(_side_path(session, ".turn")) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def bump_turn(session):
+    """A prompt was submitted: a watcher left over from the last idle spell stands down."""
+    n = _turn(session) + 1   # (read before opening for writing: that truncates the file)
+    try:
+        os.makedirs(SESS_DIR, exist_ok=True)
+        with open(_side_path(session, ".turn"), "w") as f:
+            f.write(str(n))
+    except OSError:
+        pass
+
+
+def _is_our_watcher(pid):
+    """True only if `pid` is a running `claudestick_hook.py --watch` (never kill a reused pid)."""
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "claudestick_hook" in out and "--watch" in out
+
+
+def stop_watcher(session, remove=True):
+    """Ask this session's watcher to exit (SessionEnd, or a newer watcher taking over)."""
+    path = _side_path(session, ".watch")
+    try:
+        with open(path) as f:
+            pid = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        pid = 0
+    if pid and pid != os.getpid() and _is_our_watcher(pid):
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    if remove:
+        for ext in (".watch", ".turn"):
+            try:
+                os.remove(_side_path(session, ext))
+            except OSError:
+                pass
+
+
+def watch_main():
+    try:
+        ev = json.load(sys.stdin)
+    except ValueError:
+        return
+    sid = str(ev.get("session_id") or "unknown")
+    cfg = load_config()
+    dev = Device(cfg, may_discover=False)
+    stop_watcher(sid, remove=False)              # one watcher per session: an older one stands down
+    try:
+        os.makedirs(SESS_DIR, exist_ok=True)
+        with open(_side_path(sid, ".watch"), "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+    body = base_body(ev)
+    turn, parent, started, delay = _turn(sid), os.getppid(), time.time(), WATCH_POLL_S
+    try:
+        while time.time() - started < WATCH_MAX_S:
+            time.sleep(delay)
+            if _turn(sid) != turn or os.getppid() != parent:
+                return                            # a new prompt came in, or Claude Code went away
+            r = dev.call("POST", "/watch", body, timeout=3)
+            if r is None:
+                delay = min(delay * 2, 30)        # the Stick/bridge is unreachable: back off
+                continue
+            delay = WATCH_POLL_S
+            if r.get("inject"):
+                sys.stderr.write("New instruction from the user (sent from their ClaudeStick): " + str(r["inject"]) + "\n")
+                sys.stderr.flush()
+                sys.exit(2)                       # exit code 2 wakes Claude with this as a system reminder
+    finally:
+        try:
+            with open(_side_path(sid, ".watch")) as f:
+                mine = int(f.read().strip() or 0) == os.getpid()
+            if mine:
+                os.remove(_side_path(sid, ".watch"))
+        except (OSError, ValueError):
+            pass
 
 
 # ------------------------------------------------------------------ status line
@@ -1131,11 +1244,15 @@ def main():
         return statusline_main()
     if os.environ.get("CLAUDESTICK", "1") == "0":
         return
+    if "--watch" in sys.argv:
+        return watch_main()
     try:
         ev = json.load(sys.stdin)
     except ValueError:
         return
     name = ev.get("hook_event_name", "")
+    if name == "UserPromptSubmit":
+        bump_turn(str(ev.get("session_id") or "unknown"))   # a watcher from the last idle spell stands down, device up or not
     slow = name in SLOW_EVENTS
     if device_down() and not (slow and not _recent(DISCOVER_FILE, DISCOVER_BACKOFF_S)):
         return

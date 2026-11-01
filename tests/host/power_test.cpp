@@ -151,6 +151,54 @@ int main() {
     wakeMotion = true;
   }
 
+  // ---- the power button is never a control (a tap switches the Stick off); tilt moves through menus; hold B dismisses
+  {
+    TiltNav t;
+    check("tilt nav: the first reading only sets the resting angle", tiltNavStep(t, 0.0f, 1000, 1) == 0);
+    check("tilt forward = next", tiltNavStep(t, 0.4f, 1100, 1) == 1);
+    check("...one step per tilt, not one per reading", tiltNavStep(t, 0.4f, 1200, 1) == 0 && tiltNavStep(t, 0.4f, 1300, 1) == 0);
+    check("...keep it tilted and it repeats", tiltNavStep(t, 0.4f, 1850, 1) == 1);
+    int back = 0; tiltNavStep(t, 0.0f, 1900, 1);
+    check("back to level re-arms it", tiltNavStep(t, -0.4f, 2000, 1) == -1);
+    TiltNav w; tiltNavStep(w, 0.0f, 1000, 1); int steps = 0;
+    for (int i = 0; i < 40; i++) steps += abs(tiltNavStep(w, 0.1f * ((i % 2) ? 1 : -1), 1100 + 100 * i, 1));
+    check("a wobble of a few degrees never steps", steps == 0, std::to_string(steps));
+    TiltNav h; tiltNavStep(h, 0.0f, 1000, 1); steps = 0;
+    for (int i = 0; i < 100; i++) steps += abs(tiltNavStep(h, 0.4f, 1100 + 100 * i, 1));
+    check("a new resting posture stops repeating after a few seconds", steps >= 2 && steps <= 9, std::to_string(steps));
+    TiltNav f; tiltNavStep(f, 0.0f, 1000, -1);
+    check("a flipped Stick reverses it", tiltNavStep(f, 0.4f, 1100, -1) == -1);
+    (void)back;
+
+    PREFS["setup"] = "1"; setup(); token = ""; setupDone = true;
+    dimmed = false; voiceState = V_IDLE; tiltMode = 1; flipped = false; screen = SCR_ACTIONS; menuIdx = 0; noticeUntil = 0;
+    IMU_ACC[0] = 0; IMU_ACC[1] = 0; IMU_ACC[2] = 1;
+    NOW += 1000; buttons();                                           // resting angle
+    NOW += 200; IMU_ACC[0] = 0.4f; buttons();
+    check("tilting forward in the menu moves down", menuIdx == 1, std::to_string(menuIdx));
+    NOW += 200; IMU_ACC[0] = 0.0f; buttons();
+    NOW += 200; IMU_ACC[0] = -0.4f; buttons();
+    check("tilting back moves up", menuIdx == 0, std::to_string(menuIdx));
+    NOW += 200; IMU_ACC[0] = 0.0f; buttons();
+    M5.BtnPWR.c = true; M5.BtnPWR.hd = true; buttons(); M5.BtnPWR.c = M5.BtnPWR.hd = false;
+    check("the power button does nothing", menuIdx == 0 && screen == SCR_ACTIONS);
+    tiltMode = 0; NOW += 200; IMU_ACC[0] = 0.5f; buttons(); NOW += 200; IMU_ACC[0] = 0.0f; buttons();
+    check("with tilt switched off it doesn't move anything", menuIdx == 0);
+    tiltMode = 1; IMU_ACC[0] = 0; screen = SCR_HOME;
+    NOW += 200; buttons(); NOW += 200; IMU_ACC[0] = 0.5f; buttons(); IMU_ACC[0] = 0;
+    check("on Home, tilting does nothing", menuIdx == 0 && screen == SCR_HOME);
+
+    // a Done card: B and tilt move through Claude's options and your macros; hold B dismisses
+    stops[0] = StopReq(); stops[0].used = true; stops[0].id = 77; stops[0].session = "s"; stops[0].nMacros = 3; stops[0].created = NOW; stops[0].result = -1;
+    menuIdx = 0; NOW += 1000; buttons();
+    NOW += 200; IMU_ACC[0] = 0.4f; buttons();
+    check("tilting moves through a Done card's options", menuIdx == 1, std::to_string(menuIdx));
+    IMU_ACC[0] = 0;
+    M5.BtnB.hd = true; buttons(); M5.BtnB.hd = false;
+    check("hold B dismisses the Done card", stops[0].result == -2, std::to_string(stops[0].result));
+    stops[0] = StopReq(); menuIdx = 0;
+  }
+
   printf("\n%s\n", fails ? "power: FAILED" : "power: all passed");
   return fails;
 }

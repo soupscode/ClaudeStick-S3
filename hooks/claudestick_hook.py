@@ -597,6 +597,13 @@ def _task_id(inp):
     return str(v) if v not in (None, "") else ""
 
 
+def _started(st, task):
+    """Remember the order tasks were started in. Claude sometimes leaves old tasks marked in progress,
+    so "what's happening now" has to be the one it started last, not the first one in the list."""
+    st["seq"] = int(st.get("seq", 0)) + 1
+    task["u"] = st["seq"]
+
+
 def track_tasks(st, tool, inp, resp):
     """Apply one to-do tool call to the stored list. Returns True if it changed."""
     inp = inp if isinstance(inp, dict) else {}
@@ -609,6 +616,8 @@ def track_tasks(st, tool, inp, resp):
             tid = str(i + 1)
             st["tasks"][tid] = {"t": t.get("content", ""), "a": t.get("activeForm") or t.get("active_form") or "",
                                 "s": t.get("status", "pending")}
+            if st["tasks"][tid]["s"] == "in_progress":
+                _started(st, st["tasks"][tid])
             st["order"].append(tid)
         return True
     if tool == "TaskCreate":
@@ -635,6 +644,8 @@ def track_tasks(st, tool, inp, resp):
             st["order"].append(tid)
         if inp.get("status"):
             t["s"] = inp["status"]
+            if t["s"] == "in_progress":
+                _started(st, t)
         if inp.get("subject"):
             t["t"] = inp["subject"]
         if inp.get("activeForm") or inp.get("active_form"):
@@ -649,10 +660,13 @@ def todo_payload(st):
     if not items:
         return {"total": 0, "done": 0, "now": "", "items": []}
     done = sum(1 for t in items if t["s"] == "completed")
-    cur = next((t for t in items if t["s"] == "in_progress"), None)
-    # Show the unfinished end of long lists: the last few done items, then the rest.
+    # The current task is the in-progress one started last (list order breaks ties and covers older files).
+    cur_i = max((i for i, t in enumerate(items) if t["s"] == "in_progress"), key=lambda i: (items[i].get("u", 0), i), default=None)
+    cur = items[cur_i] if cur_i is not None else None
+    # Long lists: show the part around the current task (or the first unfinished one), two items of context above.
     first_open = next((i for i, t in enumerate(items) if t["s"] != "completed"), len(items))
-    start = max(0, min(first_open - 2, len(items) - TODO_MAX))
+    anchor = cur_i if cur_i is not None else first_open
+    start = max(0, min(anchor - 2, len(items) - TODO_MAX))
     code = {"completed": "c", "in_progress": "i"}
     return {"total": len(items), "done": done, "now": clip((cur["a"] or cur["t"]) if cur else "", 60),
             "skip": start,

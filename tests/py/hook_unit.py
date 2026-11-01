@@ -29,6 +29,33 @@ for i in range(20):
 for i in range(15):
     h.track_tasks(st2, "TaskUpdate", {"taskId": str(i + 1), "status": "completed"}, {})
 p = h.todo_payload(st2); check(len(p["items"]) == 12 and p["skip"] == 8 and p["items"][7][1] == "t15", p)
+# Claude leaves old tasks marked in progress: "now" is the one started last, and the window follows it
+st3 = {"tasks": {}, "order": [], "usage": {}}
+for i in range(1, 25):
+    h.track_tasks(st3, "TaskCreate", {"subject": f"task {i}", "activeForm": f"Doing {i}"}, {"task": {"id": str(i)}})
+for i in (2, 9, 22):
+    h.track_tasks(st3, "TaskUpdate", {"taskId": str(i), "status": "in_progress"}, {})
+for i in list(range(1, 2)) + list(range(3, 9)) + list(range(10, 22)):
+    h.track_tasks(st3, "TaskUpdate", {"taskId": str(i), "status": "completed"}, {})
+p = h.todo_payload(st3)
+check(p["now"] == "Doing 22", p)
+check(p["skip"] == 12 and len(p["items"]) == 12 and [i[1] for i in p["items"]][0] == "task 13", p)
+check(next(i[1] for i in p["items"] if i[0] == "i") == "task 22", "the first in-progress row in the window is the current one: " + str(p["items"]))
+h.track_tasks(st3, "TaskUpdate", {"taskId": "9", "status": "in_progress"}, {})
+check(h.todo_payload(st3)["now"] == "Doing 9", "starting an older task again makes it current")
+h.track_tasks(st3, "TaskUpdate", {"taskId": "9", "status": "completed"}, {})
+check(h.todo_payload(st3)["now"] == "Doing 22", "finishing it goes back to the one started before")
+# lists saved by an older version have no start order: the latest in-progress item in the list wins
+st4 = {"tasks": {"1": {"t": "a", "a": "A", "s": "in_progress"}, "2": {"t": "b", "a": "B", "s": "completed"},
+                 "3": {"t": "c", "a": "C", "s": "in_progress"}}, "order": ["1", "2", "3"], "usage": {}}
+check(h.todo_payload(st4)["now"] == "C", h.todo_payload(st4))
+# nothing in progress: the window starts at the first unfinished item
+st5 = {"tasks": {}, "order": [], "usage": {}}
+for i in range(1, 21):
+    h.track_tasks(st5, "TaskCreate", {"subject": f"t{i}"}, {"task": {"id": str(i)}})
+for i in range(1, 16):
+    h.track_tasks(st5, "TaskUpdate", {"taskId": str(i), "status": "completed"}, {})
+p = h.todo_payload(st5); check(p["now"] == "" and p["skip"] == 8, p)
 # transcript usage, incl. duplicated message lines and a partial last line
 tp = os.path.join(tempfile.mkdtemp(), "t.jsonl")
 def line(mid, i, o, cr, cw, ts="2026-10-30T15:00:00Z", side=False):

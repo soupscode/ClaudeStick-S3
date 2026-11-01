@@ -51,7 +51,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.3";
+static const char*    FW_VERSION   = "0.9.4";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request

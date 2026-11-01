@@ -2,6 +2,10 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.4
+- Fix: the Stick shows the task Claude started most recently, not the oldest one still marked in progress
+- Fix: a long task list follows the current task instead of starting at the top
+
 ## 0.9.3
 - Pair with a 6-digit code instead of the long token: Stick, phone page and installer (`--pair`)
 - The bridge makes codes from its setup page or `claudestick_bridge.py --pair`; each works once for 5 minutes

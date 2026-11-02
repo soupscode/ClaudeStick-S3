@@ -137,6 +137,8 @@ See also [SECURITY.md](../SECURITY.md).
 | `the address redirects (usually http:// to https://)` | The saved address is `http://...` and your proxy sends it to https. Use the `https://` address, with no port. |
 | `refused (403)` | A firewall or Cloudflare rule (WAF, bot protection) is blocking the Stick's requests. Add a skip rule for the bridge's hostname. |
 | `the proxy can't reach the bridge (502/503/504)` | The reverse proxy or tunnel is up but the bridge behind it isn't: check the service and the address the proxy forwards to. |
+| `TLS: X509 - Certificate verification failed...` | The Stick doesn't trust the certificate chain, or its clock is wrong (check *menu → info*). Cloudflare's Google Trust Services chain is in its list; a self-signed or private-CA certificate is not. |
+| `TLS: SSL - Memory allocation failed` (shows the free memory) | Not enough contiguous RAM for the handshake. Switch Bluetooth off (*menu → bluetooth*, it restarts) and try again. |
 | `connection refused` | Nothing is listening at that address and port: the wrong port or scheme, a LAN address used away from home, or no route in (carrier NAT: use a tunnel). |
 | `not a ClaudeStick bridge` | The address answers but isn't the bridge (wrong port or proxy path). |
 | `too many attempts, waiting` | Your address was locked out for five minutes after repeated wrong tokens. |

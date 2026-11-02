@@ -2,6 +2,9 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.10.1
+- When the Stick can't make a secure connection to the bridge (or the update source) it now says why (certificate, clock, memory) instead of "connection refused", and how much memory was free
+
 ## 0.10.0
 - New on-device look: a colour band names what each screen is about (orange needs you, red danger, green done, blue working), the two buttons are drawn as key chips that say what a press does, big type for the things you act on, mono for commands and diffs, a desk clock with the buddy when nothing is up
 - Done and Question cards keep showing "hold B: dismiss" (or "keyboard")

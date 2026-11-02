@@ -68,7 +68,11 @@ static bool fetchText(const String& url, String& out) {
   http.setTimeout(8000);
   int code = http.GET();
   if (code == 200) out = http.getString();
-  else upd.error = code > 0 ? "http " + String(code) : http.errorToString(code);
+  else {
+    upd.error = code > 0 ? "http " + String(code) : http.errorToString(code);
+    char why[96] = { 0 };   // HTTPClient reports any failed TLS handshake as "connection refused": say what mbedTLS actually said
+    if (https && code < 0 && tls.lastError(why, sizeof why) != 0 && why[0]) upd.error = String("TLS: ") + why;
+  }
   http.end();
   return code == 200;
 }

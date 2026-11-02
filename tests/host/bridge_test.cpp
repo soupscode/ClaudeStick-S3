@@ -546,6 +546,19 @@ int main() {
     HTTP_LOG.clear(); script(301, "{}"); pollNow();
     check("run time: the status says why, not just 'error 301'", bridgeErr.indexOf("redirects") >= 0 && bridgeErr.indexOf("https://") >= 0, bridgeErr.c_str());
     script(200, stateV(60)); pollNow();
+
+    // a failed TLS handshake says why, instead of HTTPClient's "connection refused"
+    bridgeSave("https://stick.example.com", "tok"); bridgeUp = false; setupDone = true;
+    TLS_ERR_CODE = -0x2700; TLS_ERR_TEXT = "X509 - Certificate verification failed, e.g. CRL, CA or signature check failed";
+    script(-1, ""); pollNow();
+    check("a TLS failure shows mbedTLS's reason and the free memory", bridgeErr.indexOf("TLS: X509") >= 0 && bridgeErr.indexOf("KB free") >= 0, bridgeErr.c_str());
+    TLS_ERR_CODE = -0x7F00; TLS_ERR_TEXT = "SSL - Memory allocation failed";
+    script(-1, ""); pollNow();
+    check("...and a memory failure says so", bridgeErr.indexOf("Memory allocation failed") >= 0, bridgeErr.c_str());
+    TLS_ERR_CODE = 0; TLS_ERR_TEXT = "";
+    script(-1, ""); pollNow();
+    check("with no TLS error recorded the plain message stays", bridgeErr.indexOf("TLS:") < 0 && bridgeErr.length() > 0, bridgeErr.c_str());
+    script(200, stateV(61)); pollNow();
   }
 
   printf("\nbridge client: %s\n", fails ? "FAILED" : "all passed");

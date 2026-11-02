@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it

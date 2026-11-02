@@ -79,7 +79,15 @@ static int bridgeRequest(const char* method, const String& path, const String& b
     int len = bridgeHttp.getSize();
     if (len > (int)BRIDGE_MAX_BODY) { bridgeHttp.end(); bridgeTls.stop(); bridgePlain.stop(); bridgeErr = "reply too large"; return -2; }
     out = bridgeHttp.getString();
-  } else bridgeErr = HTTPClient::errorToString(code);
+  } else {
+    bridgeErr = HTTPClient::errorToString(code);
+    if (https && code < 0) {
+      // HTTPClient says "connection refused" for ANY failed connect, a failed TLS handshake included. Ask mbedTLS what really
+      // happened (a certificate it doesn't trust or can't check yet, no memory for the handshake, a timeout...).
+      char why[96] = { 0 };
+      if (bridgeTls.lastError(why, sizeof why) != 0 && why[0]) bridgeErr = String("TLS: ") + why + " [" + String(internalBlock() / 1024) + " KB free]";
+    }
+  }
   bridgeHttp.end();
   // A TLS session holds ~20 KB of internal RAM. If memory is getting tight, let it go and reconnect next time.
   if (https && internalBlock() < 14000) bridgeTls.stop();

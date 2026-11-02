@@ -435,6 +435,30 @@ check("watch for an unknown session lists it", post("/watch", {"session": "fresh
       any(x["id"] == "fresh-one" for x in state()["sessions"]))
 post("/event", {"session": "fresh-one", "event": "end"})
 
+# Claude Code's name for the session reaches the state, and `--sessions` lists what the bridge knows
+post("/event", {"session": "titled", "project": "api-server@main", "event": "done", "detail": "x", "title": "Tmux session persistence for Claude Code"})
+ts = [x for x in state()["sessions"] if x["id"] == "titled"][0]
+check("a session's title is stored and shown next to its folder", ts.get("title") == "Tmux session persistence for Claude Code" and ts["project"] == "api-server@main", ts)
+post("/event", {"session": "titled", "event": "working", "title": "  "})
+check("an empty title doesn't wipe it", [x for x in state()["sessions"] if x["id"] == "titled"][0].get("title"))
+import contextlib, io
+before = core.present()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = br.sessions_command(store, srv.server_port)
+out = buf.getvalue()
+check("--sessions lists the title, the folder and the state", rc == 0 and "Tmux session persistence for Claude Code" in out and "api-server@main" in out, out)
+check("...without counting as a connected Stick or phone", core.present() == before, (before, core.present()))
+post("/event", {"session": "titled", "event": "end"})
+empty_store = br.Store(tempfile.mkdtemp()); empty_store.ensure_identity()
+empty_srv = br.make_server(empty_store, "127.0.0.1", 0)
+threading.Thread(target=empty_srv.serve_forever, daemon=True).start()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = br.sessions_command(empty_store, empty_srv.server_port)
+check("--sessions with nothing says why (hooks load when a session starts)", rc == 0 and "restart" in buf.getvalue(), buf.getvalue())
+empty_srv.shutdown()
+
 # which session was active last: idle_s counts from each hook's last report
 post("/event", {"session": "idle-a", "project": "a", "event": "working"})
 clock.t += 6

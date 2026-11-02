@@ -168,6 +168,7 @@ static void bridgeApply(JsonDocument& d) {
     s->activeAt = now - 1000UL * (o["idle_s"] | 0UL);
     s->project = (const char*)(o["project"] | ""); if (!s->project.length()) s->project = shortId(s->id);
     s->state = st; s->detail = (const char*)(o["detail"] | "");
+    s->title = (const char*)(o["title"] | "");
     if (prev != st) {
       s->stateSince = now - 1000UL * (o["since_s"] | 0UL);
       if (!quiet && !fresh) {   // the same alerts a direct hook would raise

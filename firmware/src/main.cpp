@@ -52,7 +52,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.6";
+static const char*    FW_VERSION   = "0.9.7";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -91,6 +91,7 @@ struct Session {
   bool     bridge = false;
   uint8_t  gen = 0;
   uint16_t planDone = 0;
+  String   title;              // Claude Code's own name for the session (/rename, or the one it made up)
   String   queued;             // bridge sessions: the message the bridge is holding for Claude's next step
   uint32_t activeAt = 0;       // bridge sessions: when the hook last reported anything (lastSeen is the last poll, the same for all)
   bool     urgent = false;     // "send now" was pressed for the queued message: hand it over before the next tool runs
@@ -686,6 +687,7 @@ static uint32_t tokensToday() {
 
 // Optional to-do list / token usage riding along on any /event.
 static void noteExtras(JsonDocument& in, Session* s) {
+  if (in["title"].is<const char*>()) s->title = in["title"].as<const char*>();
   if (in["plan_done"] | false) {   // Claude ticked off its last to-do
     beep(2); heartUntil = millis() + 3000; touch();
   }
@@ -902,6 +904,7 @@ static void hState() {
   for (auto& s : sessions) if (s.used) {
     JsonObject o = ss.add<JsonObject>();
     o["id"] = s.id; o["project"] = s.project; o["state"] = s.state; o["detail"] = s.detail;
+    if (s.title.length()) o["title"] = s.title;
     if (queuedText(s).length()) { o["queued"] = queuedText(s).substring(0, 60); if (s.urgent) o["urgent"] = true; }
     if (s.todoTotal) {
       JsonObject t = o["todo"].to<JsonObject>();
@@ -2023,10 +2026,12 @@ static void listBlock(const String* labels, int n, int y, uint16_t accent, const
   if (start + rows < n) txt("v", W - 10, y + (rows - 1) * 11, C_DIM);
 }
 
+// What a session is called on the Stick: the name Claude Code shows for it, else folder@branch.
+static String sessionName(const Session& s) { return s.title.length() ? s.title : s.project; }
 static String sessionLabel(const Session& s) {
-  String label = s.project;
-  for (auto& o : sessions)   // disambiguate two sessions in the same project
-    if (o.used && &o != &s && o.project == s.project) { label += "#" + s.id.substring(0, 4); break; }
+  String label = sessionName(s);
+  for (auto& o : sessions)   // disambiguate two sessions with the same name
+    if (o.used && &o != &s && sessionName(o) == label) { label += "#" + s.id.substring(0, 4); break; }
   return label;
 }
 
@@ -2171,7 +2176,7 @@ static void drawChoice(StopReq* r) {
   listBlock(labels, n, y, q ? C_CLAUDE : C_OK);
 }
 
-enum MenuItem : uint8_t { MI_STOP, MI_SENDNOW, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
+enum MenuItem : uint8_t { MI_STOP, MI_SENDNOW, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_REINSTALL, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };
 struct MenuEntry { MenuItem kind; int arg; };
 
 static int menuEntries(MenuEntry* e, String* labels) {
@@ -2191,6 +2196,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
   add(MI_FONT, 0, String("text: ") + (textStyle ? "code" : "classic"));
   add(MI_CLOCK, 0, String("clock: ") + (clock24 ? "24-hour" : "12-hour"));
   add(MI_UPDATE, 0, upd.available ? "update to v" + upd.version : String("check for updates"));
+  add(MI_REINSTALL, 0, "reinstall firmware (hold A)");
   add(MI_FLIP, 0, "flip screen");
   add(MI_TEST, 0, "hardware test");
   add(MI_HELP, 0, "button help");
@@ -2822,6 +2828,12 @@ static void buttons() {
     listNav(total, bClick || tn > 0, tn < 0);
     if (bHold) { screen = SCR_HOME; menuIdx = 0; return; }
     MenuEntry e = ents[menuIdx];
+    if (aHold && e.kind == MI_REINSTALL) {   // a deliberate re-download of the published firmware (see reinstallFirmware)
+      screen = SCR_HOME; menuIdx = 0;
+      notice("reinstall", "downloading the published firmware...", C_DIM, 20000); draw();
+      reinstallFirmware();
+      return;
+    }
     if (aHold && e.kind == MI_TOKEN) {
       char t[17];
       snprintf(t, sizeof t, "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
@@ -2850,7 +2862,8 @@ static void buttons() {
       case MI_INFO:   screen = SCR_INFO; menuIdx = 0; break;
       case MI_BT:     btPref = !btPref; prefs.putBool("bt", btPref); restartAt = millis() + 1500;
                       notice("bluetooth", btPref ? "turning on: restarting" : "turning off: restarting", C_YEL_U, 3000); break;
-      case MI_TOKEN:  holdHintUntil = millis() + 2000; beep(3); break;              // needs a hold
+      case MI_TOKEN:
+      case MI_REINSTALL: holdHintUntil = millis() + 2000; beep(3); break;           // needs a hold
       case MI_SETUP:  setupDone = false; prefs.putBool("setup", false); screen = SCR_HOME; menuIdx = 0; break;
       default:        screen = SCR_HOME; menuIdx = 0; break;
     }

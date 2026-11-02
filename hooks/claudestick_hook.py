@@ -757,6 +757,35 @@ def usage_payload(st):
             "today": max(0, u.get("days", {}).get(today, 0))}
 
 
+def read_title(path):
+    """Claude Code's name for the session: the one /rename or --name gave it, else the one it made up. It is read
+    from the end of the transcript; that format isn't documented, so on any surprise there is simply no title."""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 262144))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    custom = ai = ""
+    for line in tail.splitlines():
+        if '"custom-title"' not in line and '"ai-title"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(o, dict):
+            continue
+        if o.get("type") == "custom-title":
+            custom = str(o.get("customTitle") or o.get("title") or custom)
+        elif o.get("type") == "ai-title":
+            ai = str(o.get("aiTitle") or o.get("title") or ai)
+    return clip(custom or ai, 60)
+
+
 def session_extras(ev, force_usage=False):
     """Fields to piggyback on an /event call: 'todo' when the list changed, 'usage' every so often."""
     session = ev.get("session_id", "")
@@ -782,6 +811,12 @@ def session_extras(ev, force_usage=False):
             extra["usage"] = usage_payload(st)
             st["usage_sent"] = time.time()
         dirty = True
+    if name in ("SessionStart", "Stop") or time.time() - st.get("title_at", 0) >= 60:
+        title = read_title(ev.get("transcript_path"))
+        st["title_at"], dirty = time.time(), True
+        if title and (title != st.get("title") or name in ("SessionStart", "Stop")):   # resync on those two: the Stick may have restarted
+            st["title"] = title
+            extra["title"] = title
     if dirty:
         save_sess(session, st)
     return extra

@@ -283,6 +283,13 @@ press(action="say", session="h1", text="also run the linter")
 o, _ = finish(start({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {}, "tool_response": {}}))
 check("text queued mid-run is delivered after the next tool", "also run the linter" in json.dumps(o or {}), o)
 
+# --- the session's own name (from the transcript) shows up on the bridge
+open(tp, "w").write(json.dumps({"type": "ai-title", "aiTitle": "Tmux session persistence for Claude Code"}) + "\n")
+finish(start({"hook_event_name": "SessionStart", "source": "startup"}, sid="titled1"))
+tit = wait_for(lambda: [x for x in snap()["sessions"] if x["id"] == "titled1" and x.get("title")])
+check("the hook sends Claude Code's session title, and the bridge lists it", tit and tit[0]["title"] == "Tmux session persistence for Claude Code", snap()["sessions"])
+transcript("Done with phase 1.")
+
 # --- "send now": the next tool call is held back and the message handed over
 finish(start({"hook_event_name": "UserPromptSubmit", "prompt": "go"}, sid="p1"))
 press(action="say", session="p1", text="change of plan")

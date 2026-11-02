@@ -78,7 +78,9 @@ static bool safeAppPath(const String& p) {
   return p.length() && p.length() < 120 && !p.startsWith("/") && p.indexOf("://") < 0 && p.indexOf("..") < 0;
 }
 
-static void checkForUpdate(bool manual) {
+// manual: you asked, so a version you skipped (or one that was rolled back) is offered again.
+// force: offer what's published even if it is the version already running, for a reinstall.
+static void checkForUpdate(bool manual, bool force = false) {
   if (!conf.updateUrl.length()) { upd.lastCheck = millis() | 1; if (manual) notice("updates", "no update source set: open settings", C_YEL_U); return; }
   if (WiFi.status() != WL_CONNECTED) { upd.lastCheck = millis() | 1; if (manual) notice("updates", "no wi-fi", C_YEL_U); return; }
   // HTTPS certificates are only valid within dates, so the clock has to be set first (NTP, hook, desktop or setup page).
@@ -95,7 +97,7 @@ static void checkForUpdate(bool manual) {
   JsonDocument d;
   if (deserializeJson(d, body)) { if (manual) notice("updates", "bad ota.json", C_BAD_U); return; }
   String v = d["version"] | "";
-  upd.available = v.length() && versionNewer(v, FW_VERSION) && v != skipVersion;
+  upd.available = v.length() && (force || (versionNewer(v, FW_VERSION) && (manual || v != skipVersion)));
   if (upd.available) {
     bool fresh = v != upd.version;
     upd.version = v;
@@ -127,6 +129,19 @@ static void updateTick() {
 }
 
 static void drawUpdateProgress();   // UI section
+static void installUpdate();
+
+// Reinstall the published firmware on purpose, even if it is the one already running or one that was skipped
+// or rolled back. For a Stick that keeps crashing: a clean download replaces a damaged or odd image, and the
+// settings are kept. (Hold A on the menu item; the setup page and the web flasher can do the same.)
+static void reinstallFirmware() {
+  upd.available = false;
+  checkForUpdate(true, true);
+  if (!upd.available) return;   // the notice says why: no wi-fi, no clock, can't reach the source
+  bool newer = versionNewer(upd.version, FW_VERSION);
+  installUpdate();
+  if (upd.progress < 0 && !newer) upd.available = false;   // it failed: don't leave a same-version "update" prompt behind
+}
 
 static void installUpdate() {
   String url = updateBase() + upd.app;
@@ -189,10 +204,12 @@ static void bootHealthTick() {
 }
 
 static void bootNotices() {
+  if (resetWhy.startsWith("CRASH"))   // (a rollback or "updated!" notice below takes over if there is one)
+    notice("it crashed", "last reset: " + resetWhy + ". If it keeps happening: menu > reinstall firmware (hold A)", C_YEL_U, 12000);
   String rb = prefs.getString("rolledback", "");
   if (rb.length()) {
     notice("rolled back", "v" + rb + " kept crashing on boot, so the Stick went back to v" + String(FW_VERSION) +
-           ". That version is skipped.", C_YEL_U, 15000);
+           ". That version is skipped; check for updates (or menu > reinstall firmware) to try again.", C_YEL_U, 15000);
     prefs.remove("rolledback");
   }
   String to = prefs.getString("upd_to", "");

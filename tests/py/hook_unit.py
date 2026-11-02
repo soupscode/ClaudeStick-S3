@@ -56,6 +56,27 @@ for i in range(1, 21):
 for i in range(1, 16):
     h.track_tasks(st5, "TaskUpdate", {"taskId": str(i), "status": "completed"}, {})
 p = h.todo_payload(st5); check(p["now"] == "" and p["skip"] == 8, p)
+# Claude Code's own session title, read from the end of the transcript
+tt = os.path.join(tempfile.mkdtemp(), "t.jsonl")
+def tl(*recs, junk=False):
+    with open(tt, "w") as f:
+        for r in recs:
+            f.write((r if isinstance(r, str) else json.dumps(r)) + "\n")
+tl({"type": "user", "message": {"content": "hi"}}, {"type": "ai-title", "aiTitle": "Tmux session persistence for Claude Code"})
+check(h.read_title(tt) == "Tmux session persistence for Claude Code", h.read_title(tt))
+tl({"type": "ai-title", "aiTitle": "made up"}, {"type": "custom-title", "customTitle": "my name"}, {"type": "ai-title", "aiTitle": "made up later"})
+check(h.read_title(tt) == "my name", "a name you gave it (/rename) beats the one Claude Code made up")
+tl({"type": "ai-title", "aiTitle": "first"}, {"type": "ai-title", "aiTitle": "second"})
+check(h.read_title(tt) == "second", "the latest one wins")
+tl("not json at all", '{"type":"ai-title"', {"type": "ai-title", "aiTitle": "ok"}, '{"type":"ai-title","aiTitle":')
+check(h.read_title(tt) == "ok", "garbage lines are skipped")
+tl({"type": "user", "message": {"content": "no title yet"}})
+check(h.read_title(tt) == "" and h.read_title("/nonexistent/x.jsonl") == "" and h.read_title(None) == "", "no title / no file / no path -> empty")
+tl({"type": "ai-title", "aiTitle": "x" * 200})
+check(len(h.read_title(tt)) <= 60, "long titles are clipped")
+with open(tt, "w") as f:
+    f.write(json.dumps({"type": "ai-title", "aiTitle": "buried"}) + "\n" + json.dumps({"type": "user", "message": {"content": "y" * 400000}}) + "\n")
+check(h.read_title(tt) == "", "only the end of a big transcript is read")
 # transcript usage, incl. duplicated message lines and a partial last line
 tp = os.path.join(tempfile.mkdtemp(), "t.jsonl")
 def line(mid, i, o, cr, cw, ts="2026-10-30T15:00:00Z", side=False):

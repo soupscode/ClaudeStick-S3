@@ -138,6 +138,7 @@ See also [SECURITY.md](../SECURITY.md).
 | `too many attempts, waiting` | Your address was locked out for five minutes after repeated wrong tokens. |
 | `that pairing code is wrong or has expired` | Codes work once, last 5 minutes and die after 3 wrong tries. Make a new one (`--pair`, or the bridge's setup page). |
 | Settings page says *the Stick isn't on Wi-Fi yet* | Connect it to Wi-Fi first, then save the bridge address. |
+| A Claude Code session isn't listed | Sessions load their hooks when they start: restart ones that were open when you installed. `claudestick_bridge.py --sessions` shows who has reported in. |
 | `claude` asks in the terminal instead of the Stick | Remote mode is off or nothing is connected to the bridge; see *Remote mode* above. |
 
 `curl -s https://stick.example.com/health` and `python3 install.py --test` check each hop.

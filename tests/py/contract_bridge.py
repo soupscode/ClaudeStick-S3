@@ -119,6 +119,8 @@ STEPS = [
     ("POST", "/event", {"session": "s1", "event": "tool", "can_stop": True, "can_preempt": True}),
     ("POST", "/watch", {"session": "s1"}),
     ("POST", "/watch", {"session": "s1"}),
+    ("POST", "/event", {"session": "s1", "event": "working", "title": "Tmux session persistence for Claude Code"}),
+    ("GET", "/state", None),
     ("ACT", {"action": "stop", "session": "s1"}),
     ("POST", "/event", {"session": "s1", "event": "working", "can_stop": True}),
     ("POST", "/event", {"session": "s1", "event": "working", "todo": {"done": 1, "total": 2, "skip": 0, "now": "B", "items": [["c", "A"], ["i", "B"]]},

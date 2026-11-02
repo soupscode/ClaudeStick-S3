@@ -50,6 +50,13 @@ with sync_playwright() as p:
     pg.click("#umsg button"); time.sleep(2)
     check("firmware downloaded from Pages and uploaded to the Stick", md.S["ota_bytes"]>300000, md.S["ota_bytes"])
     pg.screenshot(path=os.path.join(SHOTS,"settings5.png"), full_page=True)
+    # reinstalling on purpose (the Stick keeps crashing): offered even when it is up to date
+    open(os.path.join(FAKE,"ota.json"),"w").write('{"version":"0.8.1","app":"firmware/claudestick-app.bin"}')
+    md.S["ota_bytes"]=0
+    pg.click("text=check for update"); pg.wait_for_selector("#umsg button")
+    check("up to date still offers a reinstall", "up to date" in pg.inner_text("#umsg") and "reinstall 0.8.1" in pg.inner_text("#umsg"), pg.inner_text("#umsg"))
+    pg.click("#umsg button"); time.sleep(2)
+    check("reinstall downloads the firmware again and uploads it", md.S["ota_bytes"]>300000, md.S["ota_bytes"])
     pg2=b.new_page(viewport={"width":420,"height":900},device_scale_factor=2); pg2.on("pageerror",lambda e: errs.append(str(e)))
     pg2.goto("http://127.0.0.1:17995/?t=tok5"); pg2.wait_for_selector("text=DANGER")
     pg2.screenshot(path=os.path.join(SHOTS,"phone5.png"), full_page=True)

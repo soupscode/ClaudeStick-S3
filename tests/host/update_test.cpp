@@ -64,6 +64,28 @@ int main() {
   upd.progress = -1; restartAt = 0; UPDATE_RESULT = HTTP_UPDATE_FAILED; installUpdate();
   check("failed install shows a notice, no restart", restartAt == 0 && noticeTitle == "update failed");
   shot("25_update_failed"); noticeUntil = 0;
+  // reinstall on purpose: the published version is the one already running
+  upd.progress = -1; restartAt = 0; noticeUntil = 0; upd.available = false; skipVersion = ""; PREFS.erase("upd_to");
+  HTTP_BODY = std::string("{\"version\":\"") + FW_VERSION + "\",\"app\":\"firmware/claudestick-app.bin\"}"; UPDATE_URL.clear(); UPDATE_RESULT = HTTP_UPDATE_OK;
+  reinstallFirmware();
+  check("reinstall downloads the published image even though it's the running version", UPDATE_URL == "https://example.github.io/app/firmware/claudestick-app.bin", UPDATE_URL);
+  check("...and restarts into it, remembering the version", upd.progress == 100 && restartAt > 0 && PREFS["upd_to"] == FW_VERSION);
+  check("a normal check would not have offered it", [&] { upd.available = false; checkForUpdate(false); return !upd.available; }());
+  upd.progress = -1; restartAt = 0; upd.available = false; noticeUntil = 0; UPDATE_URL.clear(); UPDATE_RESULT = HTTP_UPDATE_FAILED;
+  reinstallFirmware();
+  check("a failed reinstall says so and leaves no same-version 'update' prompt", noticeTitle == "update failed" && !upd.available && restartAt == 0);
+  UPDATE_RESULT = HTTP_UPDATE_OK; noticeUntil = 0; upd.progress = -1;
+  HTTP_CODE = 404; UPDATE_URL.clear(); reinstallFirmware(); HTTP_CODE = 200;
+  check("reinstall with the source unreachable downloads nothing and says why", UPDATE_URL.empty() && noticeText.indexOf("couldn't reach") >= 0, noticeText.c_str());
+  noticeUntil = 0; skipVersion = bump(1).c_str();
+  HTTP_BODY = "{\"version\":\"" + bump(1) + "\",\"app\":\"firmware/claudestick-app.bin\"}"; upd.available = false;
+  checkForUpdate(false); check("a skipped version isn't offered by the background check", !upd.available);
+  checkForUpdate(true);  check("...but asking by hand offers it again (retry after a rollback)", upd.available && std::string(upd.version.c_str()) == bump(1));
+  skipVersion = ""; upd.available = false; noticeUntil = 0;
+  PREFS.erase("upd_to"); PREFS["rolledback"] = ""; resetWhy = "CRASH (watchdog)"; bootNotices();
+  check("after a crash the notice points at the reinstall", noticeTitle == "it crashed" && noticeText.indexOf("reinstall firmware") >= 0, noticeText.c_str());
+  resetWhy = "power on"; noticeTitle = ""; noticeUntil = 0; bootNotices();
+  check("a normal boot has no crash notice", noticeTitle != "it crashed");
   // post-update / rollback notices
   PREFS["upd_to"] = FW_VERSION; bootNotices(); check("after update: 'updated!' notice", noticeTitle == "updated!"); shot("26_updated_notice");
   noticeUntil = 0; PREFS["rolledback"] = "0.9.6"; bootNotices(); check("after rollback: notice", noticeTitle == "rolled back"); shot("27_rolled_back");

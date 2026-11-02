@@ -228,6 +228,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply({
                     "remote": remote_now(), "remote_setting": CONF["remote"], "pinned": S["pinned"],
                     "sessions": [{"id": k, "project": v["project"], "state": v["state"], "detail": v["detail"],
+                                  **({"title": v["title"]} if v.get("title") else {}),
                                   **({"todo": v["todo"]} if v.get("todo", {}).get("total") else {}),
                                   **({"queued": v["inject"][:60]} if v.get("inject") else {}),
                                   **({"urgent": True} if v.get("inject") and v.get("urgent") else {}),
@@ -404,6 +405,8 @@ class H(BaseHTTPRequestHandler):
                         S["pinned"] = ""
                     return self.reply({"stop": False, "inject": None, "remote": remote_now()})
                 s["state"], s["detail"] = ev, b.get("detail", "")
+                if isinstance(b.get("title"), str) and b["title"].strip():
+                    s["title"] = b["title"].strip()[:60]
                 if isinstance(b.get("todo"), dict):
                     s["todo"] = b["todo"]
                 if isinstance(b.get("usage"), dict):

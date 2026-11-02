@@ -240,6 +240,25 @@ int main() {
     d->used = false; token = savedTok;
   }
 
+  // ---- sessions are called what Claude Code calls them
+  {
+    std::string q = stateV(50); q.insert(q.find("\"state\":\"working\""), "\"title\":\"Tmux session persistence for Claude Code\",");
+    script(200, q); pollNow();
+    Session* st = findSession("sess-a", false);
+    check("the bridge's session title is mirrored", st && st->title == "Tmux session persistence for Claude Code");
+    check("...and is the name on the Stick (picker, voice review, list)", st && sessionLabel(*st) == "Tmux session persistence for Claude Code", st ? sessionLabel(*st).c_str() : "none");
+    Session* sb2 = findSession("sess-b", false);
+    check("a session without a title keeps folder@branch", sb2 && sessionLabel(*sb2) == sb2->project, sb2 ? sessionLabel(*sb2).c_str() : "none");
+    String savedTok = token; token = ""; hState();
+    check("the phone page's state carries it", has(LAST_SENT, "\"title\":\"Tmux session persistence for Claude Code\""), LAST_SENT.substr(0, 300));
+    token = savedTok;
+    std::string both = stateV(51); both.insert(both.find("\"state\":\"working\""), "\"title\":\"Same name\",");
+    both.insert(both.find("\"state\":\"done\""), "\"title\":\"Same name\",");
+    script(200, both); pollNow(); st = findSession("sess-a", false);
+    check("two sessions with the same name are told apart", st && sessionLabel(*st) != "Same name" && sessionLabel(*st).startsWith("Same name#"), st ? sessionLabel(*st).c_str() : "none");
+    script(200, stateV(52)); pollNow();
+  }
+
   // ---- "the active session" (voice, macros, stop) is the one whose hook reported last, not whichever polled last
   {
     auto withIdle = [&](int v, int idleA, int idleB) {

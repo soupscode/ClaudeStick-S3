@@ -2,6 +2,12 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.7
+- Reinstall the firmware on purpose if it keeps crashing: menu > reinstall firmware (hold A), or "reinstall" on the setup page. It works even on the version you already have; settings are kept
+- After a crash the Stick says so and points at the reinstall; "check for updates" offers a skipped or rolled-back version again
+- Sessions are named the way Claude Code names them (/rename, or its own title) instead of folder@branch
+- `claudestick_bridge.py --sessions` lists the Claude Code sessions the bridge has heard from, and how long ago
+
 ## 0.9.6
 - Voice and macro messages are queued, and the Stick offers "send now": the message goes in before Claude's next tool call
 - A message for a session that isn't working (turn ended, background tasks running) can wake it: the installer adds a background Stop hook (--wake / --no-wake)

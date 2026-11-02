@@ -31,7 +31,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 
 PRESENT_S = 30           # a client (Stick or phone) that polled this recently counts as "here"
 STALE_S = 15             # the hook stopped polling a request: drop it
@@ -271,6 +271,8 @@ class Core:
     def _extras(self, sid, s, b):
         if b.get("plan_done"):
             s["plan_done_n"] += 1
+        if isinstance(b.get("title"), str) and b["title"].strip():
+            s["title"] = b["title"].strip()[:60]   # the name Claude Code shows for the session
         t = b.get("todo")
         if isinstance(t, dict):
             items = [[str(i[0])[:1], str(i[1])[:120]] for i in (t.get("items") or [])[:12]
@@ -477,6 +479,8 @@ class Core:
         for sid, s in self.sessions.items():
             o = {"id": sid, "project": s["project"], "state": s["state"], "detail": s["detail"],
                  "plan_done_n": s["plan_done_n"]}
+            if s.get("title"):
+                o["title"] = s["title"]
             if s.get("todo", {}).get("total"):
                 o["todo"] = s["todo"]
             if s.get("inject"):
@@ -793,8 +797,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if p == "/state":
             v = q.get("v")
-            client = "".join(c for c in (self.headers.get("X-Client") or "phone") if c.isalnum())[:12] + \
-                "@" + self.client_ip()
+            client = None if q.get("peek") == "1" else "".join(c for c in (self.headers.get("X-Client") or "phone") if c.isalnum())[:12] + \
+                "@" + self.client_ip()   # ?peek=1 looks without counting as a connected Stick or phone
             return self.send(core.poll(client, int(v) if v and v.lstrip("-").isdigit() else None, q.get("n") == "1"))
         if p == "/config":
             return self.send(core.config_get(q.get("secrets") == "1"))
@@ -932,6 +936,36 @@ def pair_command(store, port, ip):
     return 1
 
 
+def sessions_command(store, port):
+    """List what the bridge running on this machine knows: which Claude Code sessions have reported in."""
+    headers = {"X-Token": store.ident["token"]}
+    for scheme, handler in (("http", urllib.request.HTTPHandler()),
+                            ("https", urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))):   # loopback only
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), handler)
+        try:
+            with opener.open(urllib.request.Request(f"{scheme}://127.0.0.1:{port}/state?peek=1", headers=headers), timeout=5) as r:
+                st = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            print(f"the bridge refused ({e.code}); is this the data directory it is using? (--data)", file=sys.stderr)
+            return 1
+        except (OSError, ValueError):
+            continue
+        rows = st.get("sessions", [])
+        if not rows:
+            print("no sessions have reported in yet.\n"
+                  "A Claude Code session shows up when its first hook runs. Sessions that were already open when you installed the\n"
+                  "hooks never loaded them: restart them (claude --resume). Check the machine with: python3 install.py --test")
+            return 0
+        print(f"{len(rows)} session(s), newest activity first:")
+        for s in sorted(rows, key=lambda s: s.get("idle_s", 0)):
+            q = f'   queued: "{s["queued"]}"{" (send now)" if s.get("urgent") else ""}' if s.get("queued") else ""
+            idle = s.get("idle_s", 0)
+            print(f'  {s.get("title") or "(no title yet)"}\n    {s["project"]}  [{s["state"] or "?"}]  last heard from {idle // 60}m{idle % 60:02d}s ago{q}')
+        return 0
+    print(f"no bridge answering on port {port}: start it first (or pass --port)", file=sys.stderr)
+    return 1
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="0.0.0.0", help="address to listen on (default 0.0.0.0)")
@@ -946,6 +980,8 @@ def main(argv=None):
     p.add_argument("--rotate-token", action="store_true", help="make a new token (every client must be set up again)")
     p.add_argument("--pair", action="store_true",
                    help="ask the running bridge for a one-time 6-digit pairing code (5 minutes) and print how to use it, then exit")
+    p.add_argument("--sessions", action="store_true",
+                   help="list the Claude Code sessions that have reported to the running bridge (title, folder, state, how long ago), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="log every request (never the token)")
     a = p.parse_args(argv)
 
@@ -959,6 +995,8 @@ def main(argv=None):
         return 0
     if a.pair:
         return pair_command(store, a.port, ip)
+    if a.sessions:
+        return sessions_command(store, a.port)
     if bool(a.tls_cert) != bool(a.tls_key):
         p.error("--tls-cert and --tls-key go together")
     srv = make_server(store, a.host, a.port, a.trust_proxy, a.tls_cert, a.tls_key, a.verbose)

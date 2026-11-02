@@ -53,7 +53,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.9";
+static const char*    FW_VERSION   = "0.10.0";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -2339,7 +2339,7 @@ static void drawChoice(StopReq* r) {
   String labels[MAX_ITEMS];
   int n = choiceLabels(r, labels);
   listBlock(labels, n, y, accent);
-  hints({ "B", "next", C_DIM }, { "A", "pick", accent }, { "hA", "talk", C_DIM });
+  hints({ "B", "next", C_DIM }, { "A", "pick", accent }, { "hB", q ? "keyboard" : "dismiss", C_DIM });   // (hold A still talks: see "button help")
 }
 
 enum MenuItem : uint8_t { MI_STOP, MI_SENDNOW, MI_UNQUEUE, MI_MACRO, MI_REMOTE, MI_TIE, MI_BUDDY, MI_FONT, MI_CLOCK, MI_UPDATE, MI_REINSTALL, MI_FLIP, MI_TEST, MI_HELP, MI_INFO, MI_BT, MI_TOKEN, MI_SETUP, MI_BACK };

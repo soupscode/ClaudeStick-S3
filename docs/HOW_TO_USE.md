@@ -16,7 +16,7 @@ Everything after [installing](../README.md#install): the buttons, approvals, rem
 | Menu / lists | select | | | next | back | flick: up / down |
 | Voice result | send | | redo | discard | discard | |
 
-On cards that offer *always allow*, a single A waits 0.35 s to see whether a second press follows. Two key chips along the bottom always show what the buttons do right now, drawn like the buttons themselves: a **round key is A** (the big front button), a **square key is B** (the side button), two round keys mean double-press, a key with a ring round it means hold. The coloured band at the top says what the screen is about (orange: needs you, red: danger, green: done, blue: working) and carries the buddy's face. **Menu → button help** lists them on the device.
+On cards that offer *always allow*, a single A waits 0.35 s to see whether a second press follows. The band across the top says what the screen is about in one word and colour: orange needs you, red danger, green done, blue working, grey idle. Two key chips along the bottom always show what the buttons do right now, drawn like the buttons themselves: a **round key is A** (the big front button), a **square key is B** (the side button), two round keys mean double-press, a key with a ring round it means hold. The coloured band at the top says what the screen is about (orange: needs you, red: danger, green: done, blue: working) and carries the buddy's face. **Menu → button help** lists them on the device.
 
 ## Approvals
 

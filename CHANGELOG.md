@@ -4,6 +4,7 @@ Each version's bullets are shown on the Stick's "update available!" prompt.
 
 ## 0.10.0
 - New on-device look: a colour band names what each screen is about (orange needs you, red danger, green done, blue working), the two buttons are drawn as key chips that say what a press does, big type for the things you act on, mono for commands and diffs, a desk clock with the buddy when nothing is up
+- Done and Question cards keep showing "hold B: dismiss" (or "keyboard")
 - Danger cards wear a crawling hazard tape; long titles and MCP tool names fit; a home with more sessions than fit says "+n more" instead of hiding them
 
 ## 0.9.9

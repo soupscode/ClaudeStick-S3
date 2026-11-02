@@ -7,7 +7,11 @@ import warnings
 warnings.filterwarnings("ignore")
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 sys.path.insert(0, ROOT + "/tools")
-import ca_bundle as cb  # noqa: E402
+try:
+    import ca_bundle as cb  # noqa: E402
+except ImportError:
+    print("SKIP the CA-bundle test needs `pip install cryptography`")
+    sys.exit(0)
 
 FAILED = []
 

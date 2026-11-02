@@ -26,6 +26,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install cryptography   # the CA-bundle test parses certificates
       - name: Tests
         # On failure, surface the tail of the test output as an annotation (readable via the API/UI summary).
         run: |

@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 M5Unified M5; WiFiClass WiFi; HWSerialStub Serial; EspClass ESP; MDNSResponder MDNS;
-namespace fonts { const IFont Font0, Font2, Font4; }
 float IMU_ACC[3] = {0, 0, 1};
 unsigned long NOW = 100000; int TONES = 0; int BATT_PCT = 87; bool BATT_CHARGING = false;
 std::string GOOD_PASS = "goodpass";

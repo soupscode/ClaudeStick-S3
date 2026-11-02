@@ -46,7 +46,7 @@ Bump the version and changelog as above and push to `main`. CI builds, runs `too
 
 ## Code notes
 
-- Firmware text is ASCII only (6x8 glyphs); fold anything displayed. Layout constants and the corner/pet layouts are at the top of the UI section in `main.cpp`.
+- Firmware text is ASCII only; fold anything displayed. Commands, diffs and lists of data use the 6x8 mono (`useMono()`), things you act on use Font2 (`useUi()`), band titles FreeSansBold9 (`useBig()`). Layout constants (band, chips, pet pane) are at the top of the UI section in `main.cpp`; the host stub renders the real M5GFX glyph data, so `tests/host/out` is what the device shows.
 - Don't block the main loop: long operations (TLS, uploads) are guarded by idle and memory checks. Anything that could hold up an approval needs a reason.
 - `firmware/src/ble_bridge.*` and `firmware/src/buddies/*` track upstream (anthropics/claude-desktop-buddy); avoid editing them.
 

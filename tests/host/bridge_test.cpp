@@ -278,7 +278,7 @@ int main() {
   focusSession = -1;
   MenuEntry ents[MAX_ITEMS]; String labels[MAX_ITEMS];
   int n = menuEntries(ents, labels);
-  bool bridgeMacros = false; for (int i = 0; i < n; i++) if (ents[i].kind == MI_MACRO && labels[i] == "> Keep going") bridgeMacros = true;
+  bool bridgeMacros = false; for (int i = 0; i < n; i++) if (ents[i].kind == MI_MACRO && labels[i] == "Keep going") bridgeMacros = true;   // macros carry an arrow icon, not a "> " prefix
   check("the actions menu lists the bridge's macros for a bridge session", bridgeMacros);
   HTTP_LOG.clear(); script(200, R"({"ok":true})"); setRemoteSetting(1);
   check("remote setting goes to the bridge", has(lastReq(), "\"action\":\"remote\"") && has(lastReq(), "\"setting\":\"on\""), lastReq());

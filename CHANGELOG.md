@@ -2,6 +2,10 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.10.0
+- New on-device look: a colour band names what each screen is about (orange needs you, red danger, green done, blue working), the two buttons are drawn as key chips that say what a press does, big type for the things you act on, mono for commands and diffs, a desk clock with the buddy when nothing is up
+- Danger cards wear a crawling hazard tape; long titles and MCP tool names fit; a home with more sessions than fit says "+n more" instead of hiding them
+
 ## 0.9.9
 - The Stick explains what a bridge address is doing: a redirect (use https://), a blocked request (403) and a proxy that can't reach the bridge (502/503/504) instead of "error 301"
 

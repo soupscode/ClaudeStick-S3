@@ -114,7 +114,28 @@ int main(){
   screen = SCR_INFO; shot("44_info_bridge_offline", 2);
   screen = SCR_HOME; shot("45_home_bridge_offline", 2);
   bridgeUrl = ""; bridgeTok = ""; bridgeFails = 0; bridgeErr = "";
+  // ---- v0.10 screens: edge cases the new layout has to carry
+  { mk("dddd4444", "infra@main", "working", "Provisioning the LXC containers");
+    mk("eeee5555", "A long session title that Claude Code made up itself", "done", "Wrote the migration plan");
+    shot("46_home_many", 2);
+    sessions[4].used = false; sessions[3].used = false;
+    Approval* m = newApproval(); m->src = SRC_WIFI; m->tool = "mcp__github__create_issue"; m->project = "api-server@fix-auth";
+    m->detail = "{\"title\": \"Auth tokens expire early\", \"body\": \"Refresh tokens issued before the deploy stop working after 5 minutes.\", \"labels\": [\"bug\"]}";
+    shot("47_approval_mcp", 2); m->used = false;
+    Approval* bd = newApproval(); bd->src = SRC_BLE; bd->tool = "Write"; bd->project = ""; bd->detail = "/Users/me/notes/plan.md";
+    shot("48_approval_desktop", 2); bd->used = false;
+    voiceState = V_QUEUED; voiceTarget = "aaaa1111"; voiceText = "also update the docs when you're done with the tests";
+    shot("49_queued", 2); voiceState = V_IDLE;
+    voiceState = V_ERROR; voiceErr = "speech server: 503"; shot("50_voice_error", 2); voiceState = V_IDLE;
+    notice("it crashed", "last reset: CRASH (panic). If it keeps happening: menu > reinstall firmware (hold A)", C_YEL, 60000);
+    shot("51_notice_long", 2); noticeUntil = 0;
+    notice("bridge", "connected again", C_OK, 60000); shot("52_notice_short", 2); noticeUntil = 0;
+    dimmed = true; shot("53_home_dimmed", 2); dimmed = false;
+    sessions[0].inject = "run the linter too"; shot("54_home_queued", 2); sessions[0].inject = "";
+    screen = SCR_ACTIONS; menuIdx = 7; holdHintUntil = NOW + 3000; shot("55_menu_needs_hold", 2); holdHintUntil = 0; screen = SCR_HOME;
+  }
   // buddy gallery
-  for (int i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); char n[64]; snprintf(n, sizeof n, "sp_%02d_%s", i, buddySpeciesName()); screen = SCR_HOME; sessions[0].state="tool"; shot(n, 7); }
+  for (int i = 0; i < buddySpeciesCount(); i++) { buddySetSpeciesIdx(i); char n[64]; snprintf(n, sizeof n, "sp_%02d_%s", i, buddySpeciesName()); screen = SCR_PET; shot(n, 7); }
+  screen = SCR_HOME; buddySetSpeciesIdx(0);
   return 0;
 }

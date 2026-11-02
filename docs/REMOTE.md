@@ -137,6 +137,7 @@ See also [SECURITY.md](../SECURITY.md).
 | `the address redirects (usually http:// to https://)` | The saved address is `http://...` and your proxy sends it to https. Use the `https://` address, with no port. |
 | `refused (403)` | A firewall or Cloudflare rule (WAF, bot protection) is blocking the Stick's requests. Add a skip rule for the bridge's hostname. |
 | `the proxy can't reach the bridge (502/503/504)` | The reverse proxy or tunnel is up but the bridge behind it isn't: check the service and the address the proxy forwards to. |
+| `TLS: X509 - A fatal error occurred, eg the chain is too long or the vrfy callback failed` | The Stick couldn't match the end of the certificate chain the server sent to a root it trusts. Cloudflare (Google Trust Services) chains end at a cross-signed root from GlobalSign's 1998 root, which Mozilla's list no longer has; firmware 0.10.2 and later include it. Update the Stick (*menu → check for updates*). |
 | `TLS: X509 - Certificate verification failed...` | The Stick doesn't trust the certificate chain, or its clock is wrong (check *menu → info*). Cloudflare's Google Trust Services chain is in its list; a self-signed or private-CA certificate is not. |
 | `TLS: SSL - Memory allocation failed` (shows the free memory) | Not enough contiguous RAM for the handshake. Switch Bluetooth off (*menu → bluetooth*, it restarts) and try again. |
 | `connection refused` | Nothing is listening at that address and port: the wrong port or scheme, a LAN address used away from home, or no route in (carrier NAT: use a tunnel). |

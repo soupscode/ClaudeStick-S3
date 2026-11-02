@@ -32,6 +32,7 @@ if [ $py -eq 1 ]; then
   run py/e2e_statusline    python3 tests/py/e2e_statusline.py
   run py/selfupdate        python3 tests/py/selfupdate.py
   run py/telemetry         python3 tests/py/telemetry_collector_test.py
+  run py/ca_bundle         python3 tests/py/ca_bundle_test.py
   run tools/verify_release python3 tests/py/verify_release_test.py
 fi
 

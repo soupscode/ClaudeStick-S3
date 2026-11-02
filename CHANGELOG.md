@@ -2,6 +2,9 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.10.2
+- Connects to a bridge behind Cloudflare (Google Trust Services certificates): the CA list now includes the GlobalSign root those chains end at, so the Stick no longer fails with "X509 - ... vrfy callback failed"
+
 ## 0.10.1
 - When the Stick can't make a secure connection to the bridge (or the update source) it now says why (certificate, clock, memory) instead of "connection refused", and how much memory was free
 

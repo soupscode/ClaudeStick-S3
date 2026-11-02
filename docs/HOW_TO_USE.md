@@ -4,16 +4,16 @@ Everything after [installing](../README.md#install): the buttons, approvals, rem
 
 ## The buttons
 
-**A** is the front button and **B** the side button; *hold* is about 0.7 s and *2x* a double-press within 0.35 s. Hold A is always **talk**. The power button isn't used: a tap on it switches the Stick off. In menus and lists, **tilt the Stick back to go up and forward to go down** (B also goes down).
+**A** is the front button and **B** the side button; *hold* is about 0.7 s and *2x* a double-press within 0.35 s. Hold A is always **talk**. The power button isn't used: a tap on it switches the Stick off. In menus and lists, **flick the Stick back to go up and forward to go down** (B also goes down): one quick flick of the wrist is one step.
 
-| Screen | A | 2x A | hold A | B | hold B | tilt |
+| Screen | A | 2x A | hold A | B | hold B | flick / tilt |
 |---|---|---|---|---|---|---|
 | Approval | allow | **always allow** | **deny + say why** | deny | **answer at keyboard** | scrolls long text |
 | Approval, **danger** (red) | hint only | allow once | deny + say why | deny | answer at keyboard | scrolls long text |
-| Question / Done menu | pick | | **talk** | next | **dismiss** (Done) / answer at keyboard (Question) | up / down |
+| Question / Done menu | pick | | **talk** | next | **dismiss** (Done) / answer at keyboard (Question) | flick: up / down |
 | Home | **session details** | | **talk to Claude** | menu | menu | |
 | Session details | back | | talk to this session | next session | back | scrolls the to-do list |
-| Menu / lists | select | | | next | back | up / down |
+| Menu / lists | select | | | next | back | flick: up / down |
 | Voice result | send | | redo | discard | discard | |
 
 On cards that offer *always allow*, a single A waits 0.35 s to see whether a second press follows. A hint bar along the bottom always shows what the buttons do right now. **Menu → button help** lists them on the device.
@@ -23,7 +23,7 @@ On cards that offer *always allow*, a single A waits 0.35 s to see whether a sec
 - **Always allow** remembers a rule that fits: `Bash(git status *)` for this project, auto-accept edits for the session, a `WebFetch` domain, or an MCP tool. The card's last line shows exactly what will be remembered. It is never offered for compound shell commands or dangerous ones.
 - **Danger cards** (red border) cover `rm -rf`, force pushes, `git reset --hard`, `zfs`/`zpool destroy`, `pct`/`qm destroy`, `dd` to a disk, `mkfs`, `curl | sh`, `DROP TABLE`, stopping SSH or network services, and edits to `/etc`, `~/.ssh` or `.env`. These are heuristics, not a security boundary. Review `.claude/settings.local.json` now and then.
 - **Deny + say why:** hold A, say what Claude should do instead, press A. Claude gets the denial with your words. The phone has a matching **Deny + note** button.
-- **Edits** show a red/green diff. Long text and long lists scroll when you tilt the Stick: it takes its angle when the card appears, then tilting about 15-20° forward or back scrolls a line every quarter second. That is all tilt does; it isn't a controller. If it scrolls the wrong way, run `tilt flip` in the flasher's console (or untick *tilt to scroll* in settings, which also turns off tilting through menus). In menus and on Done cards the same tilt moves the selection instead: back is up, forward is down, one step per tilt, and it repeats if you keep it tilted. The numbers behind both are first guesses until they've been tried on a real Stick.
+- **Edits** show a red/green diff. Long text and long lists scroll when you tilt the Stick: it takes its angle when the card appears, then tilting about 15-20° forward or back scrolls a line every quarter second. That is all tilt does; it isn't a controller. If it scrolls the wrong way, run `tilt flip` in the flasher's console (or untick *tilt to scroll* in settings, which also turns off tilting through menus). In menus and on Done cards the selection moves with a **flick** instead: a quick flick back is up, forward is down, one step each. Tilting slowly, or holding it tilted, does nothing however far you go, so the menu can't run away; only a fast move that also takes it well beyond the angle you're holding it at counts, and the swing back after a flick is ignored. The numbers behind both are first guesses until they've been tried on a real Stick (they are `TN_*` in `main.cpp`).
 
 ## Remote mode
 

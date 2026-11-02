@@ -52,7 +52,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.7";
+static const char*    FW_VERSION   = "0.9.8";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -2210,7 +2210,7 @@ static int menuEntries(MenuEntry* e, String* labels) {
 
 static void drawActions() {
   Session* s = targetSession();
-  frame("menu", C_CLAUDE, "[B] next  [tilt] up  [A] ok");
+  frame("menu", C_CLAUDE, "[B] next  [flick] up  [A] ok");
   txt(s ? ("-> " + fit(sessionLabel(*s), charsAt(TOP + 2) - 3)) : String("no cli session"), PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS]; MenuEntry ents[MAX_ITEMS];
   int n = menuEntries(ents, labels);
@@ -2227,7 +2227,7 @@ static void drawHelp() {
   line("[hold B] at keyboard");
   y += 3;
   line("[B] next  [A] pick");
-  line("[tilt] up/down  [hold B] back");
+  line("[flick] up/down  [hold B] back");
   y += 3;
   line("[A] details  [B] menu");
   line("[hold A] talk", C_CLAUDE);
@@ -2352,7 +2352,7 @@ static int sessionItems(String* labels, String* marks, String* ids) {
 
 // Buddy picker: the full-size species. It also shows on the idle home screen.
 static void drawPet() {
-  frame("buddy", C_CLAUDE, "[B] next  [tilt] prev  [A] back");
+  frame("buddy", C_CLAUDE, "[B] next  [flick] prev  [A] back");
   int y = TOP + 6;
   spr.setTextSize(2); txt(buddySpeciesName(), PANE_X, y, C_CLAUDE); spr.setTextSize(1);
   y += 22;
@@ -2363,7 +2363,7 @@ static void drawPet() {
 }
 
 static void drawSessions() {
-  frame("tie to session", C_BLUE, "[B] next  [tilt] up  [A] pin");
+  frame("tie to session", C_BLUE, "[B] next  [flick] up  [A] pin");
   txt("* = stick answers these", PANE_X, TOP + 2, C_DIM);
   String labels[MAX_ITEMS], marks[MAX_ITEMS], ids[MAX_ITEMS];
   int n = sessionItems(labels, marks, ids);
@@ -2699,22 +2699,40 @@ static void doubleTimeout() {
   if (a && a->id == aFirstId) singleA(a);
 }
 
-// Tilt to move through menus: tilt back = previous, forward = next (B still goes next too). A tap on the
-// power button switches the Stick off, so it can't be a "previous" key. One step per tilt; keep it tilted
-// and it repeats. The resting angle follows slowly, so a changed posture stops counting after a few seconds.
-// The numbers are a first guess, not tuned on hardware.
-struct TiltNav { float base = 0; bool have = false, armed = true; uint32_t heldSince = 0, lastStep = 0; };
-static const float    TN_STEP = 0.30f, TN_REARM = 0.15f, TN_DRIFT = 0.01f;   // g
-static const uint32_t TN_REPEAT_AFTER = 700, TN_REPEAT_EVERY = 400;          // ms
-static int tiltNavStep(TiltNav& t, float ax, uint32_t now, float dir) {   // -1 previous, +1 next, 0 nothing
-  if (!t.have) { t.base = ax; t.have = true; return 0; }
-  float d = (ax - t.base) * dir, mag = fabsf(d);
-  int step = 0;
-  if (t.armed && mag >= TN_STEP) { step = d > 0 ? 1 : -1; t.armed = false; t.heldSince = t.lastStep = now; }
-  else if (!t.armed && mag >= TN_STEP && now - t.heldSince >= TN_REPEAT_AFTER && now - t.lastStep >= TN_REPEAT_EVERY) { step = d > 0 ? 1 : -1; t.lastStep = now; }
-  else if (!t.armed && mag < TN_REARM) t.armed = true;
-  t.base += (ax - t.base) * TN_DRIFT;
-  return step;
+// Flick to move through menus: a quick flick of the wrist back = previous, forward = next (B still goes next too).
+// A tap on the power button switches the Stick off, so it can't be a "previous" key.
+// Only a fast change counts: tilting slowly, or holding it tilted, does nothing however far, so the menu can't run
+// away with you. A flick has to be quick (TN_FLICK within TN_WINDOW_MS) AND carry the Stick beyond a wide dead zone
+// around its resting posture (TN_DEAD, about 17 degrees); the resting posture itself follows slowly (TN_POSTURE_S),
+// so a new way of holding it stops mattering after a moment. One flick = one step: the swing back is ignored
+// (TN_REFRACT_MS). The numbers are a first guess, not tuned on hardware.
+struct TiltNav {
+  float base = 0; bool have = false; uint32_t lastT = 0, quietUntil = 0;
+  uint32_t t[12]; float v[12]; uint8_t n = 0;   // the last few readings: (time, tilt)
+};
+static const float    TN_FLICK = 0.35f, TN_DEAD = 0.30f;            // g
+static const uint32_t TN_WINDOW_MS = 200, TN_REFRACT_MS = 700;
+static const float    TN_POSTURE_S = 0.8f;
+static int tiltNavStep(TiltNav& s, float ax, uint32_t now, float dir) {   // -1 previous, +1 next, 0 nothing
+  float x = ax * dir;
+  if (!s.have) { s.base = x; s.have = true; s.lastT = now; s.n = 0; }
+  float dt = (now - s.lastT) / 1000.0f; if (dt > 1.0f) dt = 1.0f;
+  s.base += (x - s.base) * (dt / TN_POSTURE_S);
+  s.lastT = now;
+  // keep only the readings from the last TN_WINDOW_MS (plus the one just before them)
+  uint8_t k = 0;
+  for (uint8_t i = 0; i < s.n; i++) if (now - s.t[i] <= TN_WINDOW_MS) { s.t[k] = s.t[i]; s.v[k] = s.v[i]; k++; }
+  s.n = k;
+  if (s.n == 12) { for (uint8_t i = 1; i < 12; i++) { s.t[i - 1] = s.t[i]; s.v[i - 1] = s.v[i]; } s.n = 11; }
+  float ref = s.n ? s.v[0] : x;           // the oldest reading still in the window
+  s.t[s.n] = now; s.v[s.n] = x; s.n++;
+  if ((int32_t)(now - s.quietUntil) < 0) return 0;          // just flicked: this is the swing back
+  float change = x - ref, away = x - s.base;
+  if (fabsf(change) >= TN_FLICK && fabsf(away) >= TN_DEAD) {
+    s.quietUntil = now + TN_REFRACT_MS;
+    return change > 0 ? 1 : -1;
+  }
+  return 0;
 }
 
 // Screens where the selection moves with tilt: lists and cards with options, never an approval (those text scroll).
@@ -2731,7 +2749,7 @@ static int tiltNavTick() {
   navActive = tiltMode != 0 && navScreen();
   if (!navActive) { t = TiltNav(); return 0; }
   uint32_t now = millis();
-  if (now - last < 100) return 0;
+  if (now - last < 20) return 0;   // a flick is over in a fraction of a second: look about 50 times a second
   last = now;
   float ax, ay, az;
   if (!M5.Imu.getAccel(&ax, &ay, &az)) return 0;

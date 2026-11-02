@@ -2,6 +2,9 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.8
+- Menus move with a quick flick of the wrist instead of a tilt: slow or held tilts are ignored, one flick is one step, and there's a wide angle where nothing registers
+
 ## 0.9.7
 - Reinstall the firmware on purpose if it keeps crashing: menu > reinstall firmware (hold A), or "reinstall" on the setup page. It works even on the version you already have; settings are kept
 - After a crash the Stick says so and points at the reinstall; "check for updates" offers a skipped or rolled-back version again

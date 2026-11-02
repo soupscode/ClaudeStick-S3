@@ -151,48 +151,71 @@ int main() {
     wakeMotion = true;
   }
 
-  // ---- the power button is never a control (a tap switches the Stick off); tilt moves through menus; hold B dismisses
+  // ---- the power button is never a control (a tap switches the Stick off); a flick moves through menus; hold B dismisses
   {
-    TiltNav t;
-    check("tilt nav: the first reading only sets the resting angle", tiltNavStep(t, 0.0f, 1000, 1) == 0);
-    check("tilt forward = next", tiltNavStep(t, 0.4f, 1100, 1) == 1);
-    check("...one step per tilt, not one per reading", tiltNavStep(t, 0.4f, 1200, 1) == 0 && tiltNavStep(t, 0.4f, 1300, 1) == 0);
-    check("...keep it tilted and it repeats", tiltNavStep(t, 0.4f, 1850, 1) == 1);
-    int back = 0; tiltNavStep(t, 0.0f, 1900, 1);
-    check("back to level re-arms it", tiltNavStep(t, -0.4f, 2000, 1) == -1);
-    TiltNav w; tiltNavStep(w, 0.0f, 1000, 1); int steps = 0;
-    for (int i = 0; i < 40; i++) steps += abs(tiltNavStep(w, 0.1f * ((i % 2) ? 1 : -1), 1100 + 100 * i, 1));
-    check("a wobble of a few degrees never steps", steps == 0, std::to_string(steps));
-    TiltNav h; tiltNavStep(h, 0.0f, 1000, 1); steps = 0;
-    for (int i = 0; i < 100; i++) steps += abs(tiltNavStep(h, 0.4f, 1100 + 100 * i, 1));
-    check("a new resting posture stops repeating after a few seconds", steps >= 2 && steps <= 9, std::to_string(steps));
-    TiltNav f; tiltNavStep(f, 0.0f, 1000, -1);
-    check("a flipped Stick reverses it", tiltNavStep(f, 0.4f, 1100, -1) == -1);
-    (void)back;
+    // The pure detector. Readings every 25 ms; ramp() moves the tilt from `from` to `to` over `ms`, returns the steps it caused.
+    struct Rig { TiltNav t; uint32_t now = 1000; float x = 0; float dir = 1;
+      int step(float to, uint32_t ms) { int sum = 0, n = (int)(ms / 25); for (int i = 1; i <= n; i++) { sum += tiltNavStep(t, x + (to - x) * i / n, now += 25, dir); } x = to; return sum; }
+      int rest(uint32_t ms) { return step(x, ms); }
+      int count(float to, uint32_t ms) { int c = 0, n = (int)(ms / 25); for (int i = 1; i <= n; i++) c += tiltNavStep(t, x + (to - x) * i / n, now += 25, dir) != 0; x = to; return c; } };
+    { Rig r; r.rest(1000);
+      check("flick: the first readings set the resting posture", r.rest(500) == 0); }
+    { Rig r; r.rest(1000);
+      check("slowly tilting a long way does nothing", r.count(0.8f, 2000) == 0 && r.count(0.8f, 3000) == 0); }
+    { Rig r; r.rest(1000); int s1 = r.step(0.6f, 100);
+      check("a quick flick forward steps once, forward", s1 == 1, std::to_string(s1));
+      check("...holding it there does nothing more", r.count(0.6f, 3000) == 0);
+      Rig q; q.rest(1000); int a = q.step(0.6f, 100); q.rest(400); int back = q.count(0.0f, 100);
+      check("...and the swing back isn't a second step", a == 1 && back == 0, std::to_string(back)); }
+    { Rig r; r.rest(1000); int s1 = r.step(-0.6f, 100);
+      check("a quick flick back steps once, backward", s1 == -1, std::to_string(s1)); }
+    { Rig r; r.rest(1000); int total = 0;
+      total += r.step(0.6f, 100); r.rest(300); r.step(0.0f, 100); r.rest(1000); total += r.step(0.6f, 100);
+      check("two flicks a moment apart are two steps", total == 2, std::to_string(total)); }
+    { Rig r; r.rest(1000); int c = 0;
+      for (int i = 0; i < 20; i++) c += r.count(i % 2 ? 0.15f : -0.15f, 100);
+      check("small quick jiggles (inside the dead zone) do nothing", c == 0, std::to_string(c)); }
+    { Rig r; r.rest(1000); r.count(0.5f, 3000);   // slowly settles into a new way of holding it
+      int s1 = r.step(1.0f, 100);
+      check("a flick works from any resting posture", s1 == 1, std::to_string(s1)); }
+    { Rig r; r.rest(1000); r.count(0.8f, 3000); r.count(0.0f, 3000);   // tilted slowly out and slowly back, then flicks at once
+      int s1 = r.step(0.6f, 100);
+      check("a flick right after a slow tilt back to level still works", s1 == 1, std::to_string(s1)); }
+    { Rig r; r.dir = -1; r.rest(1000); int s1 = r.step(0.6f, 100);
+      check("a flipped Stick reverses it", s1 == -1, std::to_string(s1)); }
+    { Rig r; r.rest(1000); int c = 0;
+      c += r.count(0.30f, 100);
+      check("a small quick tilt (under the dead zone) doesn't count", c == 0, std::to_string(c)); }
 
+    // In the menu, through buttons().
     PREFS["setup"] = "1"; setup(); token = ""; setupDone = true;
     dimmed = false; voiceState = V_IDLE; tiltMode = 1; flipped = false; screen = SCR_ACTIONS; menuIdx = 0; noticeUntil = 0;
     IMU_ACC[0] = 0; IMU_ACC[1] = 0; IMU_ACC[2] = 1;
-    NOW += 1000; buttons();                                           // resting angle
-    NOW += 200; IMU_ACC[0] = 0.4f; buttons();
-    check("tilting forward in the menu moves down", menuIdx == 1, std::to_string(menuIdx));
-    NOW += 200; IMU_ACC[0] = 0.0f; buttons();
-    NOW += 200; IMU_ACC[0] = -0.4f; buttons();
-    check("tilting back moves up", menuIdx == 0, std::to_string(menuIdx));
-    NOW += 200; IMU_ACC[0] = 0.0f; buttons();
+    auto tickTo = [&](float to, int ms) { float from = IMU_ACC[0]; int n = ms / 25; for (int i = 1; i <= n; i++) { NOW += 25; IMU_ACC[0] = from + (to - from) * i / n; buttons(); } };
+    tickTo(0, 1000);                                                  // resting posture
+    tickTo(0.8f, 3000); tickTo(0.0f, 3000);
+    check("slowly tilting the menu back and forth doesn't move the selection", menuIdx == 0, std::to_string(menuIdx));
+    tickTo(0.6f, 100);
+    check("a flick forward moves down one", menuIdx == 1, std::to_string(menuIdx));
+    tickTo(0.6f, 2000);
+    check("...and holding it there doesn't keep scrolling", menuIdx == 1, std::to_string(menuIdx));
+    tickTo(0.0f, 2000); menuIdx = 3; tickTo(0.0f, 1000);
+    tickTo(-0.6f, 100);
+    check("a flick back moves up one", menuIdx == 2, std::to_string(menuIdx));
+    tickTo(0.0f, 2000);
     M5.BtnPWR.c = true; M5.BtnPWR.hd = true; buttons(); M5.BtnPWR.c = M5.BtnPWR.hd = false;
-    check("the power button does nothing", menuIdx == 0 && screen == SCR_ACTIONS);
-    tiltMode = 0; NOW += 200; IMU_ACC[0] = 0.5f; buttons(); NOW += 200; IMU_ACC[0] = 0.0f; buttons();
-    check("with tilt switched off it doesn't move anything", menuIdx == 0);
-    tiltMode = 1; IMU_ACC[0] = 0; screen = SCR_HOME;
-    NOW += 200; buttons(); NOW += 200; IMU_ACC[0] = 0.5f; buttons(); IMU_ACC[0] = 0;
+    check("the power button does nothing", menuIdx == 2 && screen == SCR_ACTIONS);
+    tiltMode = 0; tickTo(0.0f, 1000); tickTo(0.7f, 100); tickTo(0.0f, 1500);
+    check("with tilt switched off it doesn't move anything", menuIdx == 2);
+    tiltMode = 1; screen = SCR_HOME; IMU_ACC[0] = 0; menuIdx = 0;
+    tickTo(0.0f, 1000); tickTo(0.7f, 100); tickTo(0.0f, 1500);
     check("on Home, tilting does nothing", menuIdx == 0 && screen == SCR_HOME);
 
-    // a Done card: B and tilt move through Claude's options and your macros; hold B dismisses
+    // a Done card: B and flicks move through Claude's options and your macros; hold B dismisses
     stops[0] = StopReq(); stops[0].used = true; stops[0].id = 77; stops[0].session = "s"; stops[0].nMacros = 3; stops[0].created = NOW; stops[0].result = -1;
-    menuIdx = 0; NOW += 1000; buttons();
-    NOW += 200; IMU_ACC[0] = 0.4f; buttons();
-    check("tilting moves through a Done card's options", menuIdx == 1, std::to_string(menuIdx));
+    menuIdx = 0; IMU_ACC[0] = 0; tickTo(0.0f, 1000);
+    tickTo(0.6f, 100);
+    check("flicking moves through a Done card's options", menuIdx == 1, std::to_string(menuIdx));
     IMU_ACC[0] = 0;
     M5.BtnB.hd = true; buttons(); M5.BtnB.hd = false;
     check("hold B dismisses the Done card", stops[0].result == -2, std::to_string(stops[0].result));

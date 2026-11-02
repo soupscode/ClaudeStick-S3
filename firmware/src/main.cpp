@@ -52,7 +52,7 @@
 #define CS_TELEMETRY_URL ""
 #endif
 
-static const char*    FW_VERSION   = "0.9.8";
+static const char*    FW_VERSION   = "0.9.9";
 static const uint16_t HTTP_PORT    = 7880;
 static const uint32_t DIM_AFTER_MS = 60000;
 static const uint32_t POLL_STALE_MS = 15000;   // hook stopped polling -> drop request
@@ -1620,7 +1620,7 @@ static void hSetupBridge() {
       out["error"] = pc == 403 ? "that pairing code is wrong or has expired (they last 5 minutes and stop working after 3 wrong tries)" :
                      pc == 429 ? "too many wrong codes from this network: wait a few minutes" :
                      pc == 404 ? "that address answered, but it isn't a ClaudeStick bridge" :
-                     pc > 0 ? "the bridge answered " + String(pc) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
+                     pc > 0 ? bridgeAnswer(pc) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
                      pairErr.length() ? pairErr : "could not reach it";
       sendJson(out);
       return;
@@ -1637,7 +1637,7 @@ static void hSetupBridge() {
   if (good) { bridgeUp = true; bridgeEverUp = true; bridgeFails = 0; bridgeApply(d); bridgeV = d["v"] | 0UL; bridgeNextPoll = millis() + BRIDGE_POLL_ACTIVE_MS; }
   out["ok"] = good; out["set"] = true;
   out["error"] = good ? "" : code == 401 ? "the bridge rejected that token" : code == 404 ? "that address answered, but it isn't a ClaudeStick bridge" :
-                 code > 0 ? "the bridge answered " + String(code) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
+                 code > 0 ? bridgeAnswer(code) : WiFi.status() != WL_CONNECTED ? "the Stick isn't on Wi-Fi yet" :
                  bridgeErr.length() ? bridgeErr : "could not reach it";
   sendJson(out);
 }

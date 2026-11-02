@@ -93,7 +93,7 @@ int main() {
   conf.updateUrl = "https://example.github.io/app/"; HTTP_CODE = 200; upd.available = false; upd.lastCheck = 0; noticeUntil = 0; upd.remindAt = 0;
   auto setTime = [](long e) { struct timeval tv = { (time_t)e, 0 }; settimeofday(&tv, nullptr); };
   setTime(1);   // no clock yet
-  HTTP_BODY = "{\"version\":\"0.9.9\",\"app\":\"firmware/claudestick-app.bin\"}"; LAST_URL.clear();
+  HTTP_BODY = "{\"version\":\"" + bump(5) + "\",\"app\":\"firmware/claudestick-app.bin\"}"; LAST_URL.clear();
   checkForUpdate(true);
   check("https check waits for the clock", LAST_URL.empty() && !upd.available && upd.lastCheck == 0 && noticeText.indexOf("clock") >= 0, noticeText.c_str());
   noticeUntil = 0; NOW = 400000; lastActivity = 0; updateTick(); LAST_URL.clear();
@@ -105,14 +105,14 @@ int main() {
   ap->used = false;
   lastActivity = NOW - 1000; updateTick(); check("background check waits while you're using it", LAST_URL.empty());
   NOW += 20000; lastActivity = NOW - 60000; updateTick();
-  check("background check runs when idle", LAST_URL == "https://example.github.io/app/ota.json" && upd.available && upd.version == "0.9.9", LAST_URL);
+  check("background check runs when idle", LAST_URL == "https://example.github.io/app/ota.json" && upd.available && std::string(upd.version.c_str()) == bump(5), LAST_URL);
   updateTick(); LAST_URL.clear(); NOW += 16000; updateTick();
   check("and not again for hours", LAST_URL.empty());
   // update source paths must stay relative
   upd.available = false; upd.version = ""; upd.lastCheck = 0;
-  HTTP_BODY = "{\"version\":\"0.9.9\",\"app\":\"https://evil.example/x.bin\"}"; checkForUpdate(false);
+  HTTP_BODY = "{\"version\":\"" + bump(5) + "\",\"app\":\"https://evil.example/x.bin\"}"; checkForUpdate(false);
   check("absolute app URL ignored", upd.app == "firmware/claudestick-app.bin", upd.app.c_str());
-  upd.available = false; upd.version = ""; HTTP_BODY = "{\"version\":\"0.9.9\",\"app\":\"../../x.bin\"}"; checkForUpdate(false);
+  upd.available = false; upd.version = ""; HTTP_BODY = "{\"version\":\"" + bump(5) + "\",\"app\":\"../../x.bin\"}"; checkForUpdate(false);
   check("path traversal ignored", upd.app == "firmware/claudestick-app.bin", upd.app.c_str());
   // not enough memory for TLS: explain instead of failing mid-handshake
   upd.progress = -1; restartAt = 0; UPDATE_URL.clear(); HEAP_FREE = 20000; noticeUntil = 0; installUpdate(); HEAP_FREE = 200000;

@@ -134,6 +134,10 @@ See also [SECURITY.md](../SECURITY.md).
 | Red cloud, `token rejected` | The token on the Stick doesn't match the bridge's (`--show-token`). |
 | `waiting for the clock` | No internet time yet (NTP blocked?). It retries by itself. |
 | `low memory` | Not enough free RAM for TLS right now; restart the Stick. |
+| `the address redirects (usually http:// to https://)` | The saved address is `http://...` and your proxy sends it to https. Use the `https://` address, with no port. |
+| `refused (403)` | A firewall or Cloudflare rule (WAF, bot protection) is blocking the Stick's requests. Add a skip rule for the bridge's hostname. |
+| `the proxy can't reach the bridge (502/503/504)` | The reverse proxy or tunnel is up but the bridge behind it isn't: check the service and the address the proxy forwards to. |
+| `connection refused` | Nothing is listening at that address and port: the wrong port or scheme, a LAN address used away from home, or no route in (carrier NAT: use a tunnel). |
 | `not a ClaudeStick bridge` | The address answers but isn't the bridge (wrong port or proxy path). |
 | `too many attempts, waiting` | Your address was locked out for five minutes after repeated wrong tokens. |
 | `that pairing code is wrong or has expired` | Codes work once, last 5 minutes and die after 3 wrong tries. Make a new one (`--pair`, or the bridge's setup page). |

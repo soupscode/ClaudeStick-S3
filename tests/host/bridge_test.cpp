@@ -528,6 +528,26 @@ int main() {
   forgetAllNets();
   check("forget all", nNets == 0 && PREFS.count("nets") == 0 && PREFS.count("ssid") == 0 && ssid == "");
 
+  // ---- a bridge address that answers with something other than the bridge is explained in plain words
+  {
+    String u0 = bridgeUrl, t0 = bridgeTok; bool up0 = bridgeUp;
+    WiFi.st = WL_CONNECTED; at(NOWEPOCH);
+    script(301, "{}"); REQ_BODY = R"({"url":"http://stick.example.com","token":"sometoken"})"; hSetupBridge();
+    check("setup: a 301 says the address redirects and to use https://", has(LAST_SENT, "redirects") && has(LAST_SENT, "https://") && has(LAST_SENT, "\"ok\":false"), LAST_SENT);
+    script(403, "{}"); REQ_BODY = R"({"url":"https://stick.example.com","token":"sometoken"})"; hSetupBridge();
+    check("setup: a 403 points at a firewall/Cloudflare rule", has(LAST_SENT, "403") && has(LAST_SENT, "Cloudflare"), LAST_SENT);
+    script(502, "{}"); REQ_BODY = R"({"url":"https://stick.example.com","token":"sometoken"})"; hSetupBridge();
+    check("setup: a 502 says the proxy can't reach the bridge", has(LAST_SENT, "proxy can't reach"), LAST_SENT);
+    script(301, "{}"); REQ_BODY = R"({"url":"http://stick.example.com","code":"123456"})"; hSetupBridge();
+    check("pairing: a redirect is explained too", has(LAST_SENT, "redirects") && has(LAST_SENT, "https://"), LAST_SENT);
+    (void)u0; (void)t0; (void)up0;
+    bridgeSave("http://stick.example.com", "tok"); bridgeUp = false; setupDone = true;
+    // and when it happens later, on the status bar
+    HTTP_LOG.clear(); script(301, "{}"); pollNow();
+    check("run time: the status says why, not just 'error 301'", bridgeErr.indexOf("redirects") >= 0 && bridgeErr.indexOf("https://") >= 0, bridgeErr.c_str());
+    script(200, stateV(60)); pollNow();
+  }
+
   printf("\nbridge client: %s\n", fails ? "FAILED" : "all passed");
   return fails;
 }

@@ -2,6 +2,9 @@
 
 Each version's bullets are shown on the Stick's "update available!" prompt.
 
+## 0.9.9
+- The Stick explains what a bridge address is doing: a redirect (use https://), a blocked request (403) and a proxy that can't reach the bridge (502/503/504) instead of "error 301"
+
 ## 0.9.8
 - Menus move with a quick flick of the wrist instead of a tilt: slow or held tilts are ignored, one flick is one step, and there's a wide angle where nothing registers
 

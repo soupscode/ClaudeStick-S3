@@ -295,6 +295,14 @@ static void bridgeFail(const String& why) {
   dirty = true;
 }
 
+// What an HTTP status from the bridge address usually means, in words (the setup page and the status bar show it).
+static String bridgeAnswer(int code) {
+  if (code == 301 || code == 302 || code == 307 || code == 308) return "the address redirects (usually http:// to https://): use the https:// address";
+  if (code == 403) return "refused (403): a firewall or Cloudflare rule may be blocking the Stick";
+  if (code == 502 || code == 503 || code == 504) return "the proxy can't reach the bridge (" + String(code) + "): is it running?";
+  return "the bridge answered " + String(code);
+}
+
 static void bridgePoll() {
   String out;
   int code = bridgeRequest("GET", "/state?n=1&v=" + String(bridgeV), "", out);
@@ -315,7 +323,7 @@ static void bridgePoll() {
   }
   if (code == 401) bridgeFail("token rejected");
   else if (code == 429) bridgeFail("too many attempts, waiting");
-  else if (code > 0) bridgeFail("error " + String(code));
+  else if (code > 0) bridgeFail(bridgeAnswer(code));
   else bridgeFail("");
 }
 
